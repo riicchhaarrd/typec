@@ -17,6 +17,7 @@ typedef enum
 	k_ETokenTypeIdentifier = 256,
 	k_ETokenTypeString,
 	k_ETokenTypeNumber,
+	k_ETokenTypeComment,
 	k_ETokenTypeMax
 } k_ETokenType;
 
@@ -34,7 +35,7 @@ static const char *token_type_to_string(k_ETokenType token_type, char *string_ou
 	}
 	if(token_type < 256)
 		return "?";
-	static const char *type_strings[] = {"identifier", "string", "number"};
+	static const char *type_strings[] = {"identifier", "string", "number", "comment"};
 	return type_strings[token_type - 256];
 }
 
@@ -65,6 +66,39 @@ typedef struct
 	s32 (*tell)(void*);
 	//StreamError? longjmp
 } LexerStream;
+
+// TODO: use a stream block altough I wrote a quick implementation and it seemed slower
+typedef struct
+{
+	FILE *fp;
+	s32 index;
+	int cached;
+	char data[2048];
+} StreamBlock;
+
+int lexer_stream_read_file(void *ctx, u8 *b, s32 n)
+{
+	FILE *fp = ctx;
+	return fread(b, n, 1, fp);
+}
+int lexer_stream_seek_file(void *ctx, s32 n)
+{
+	FILE *fp = ctx;
+	return fseek(fp, n, SEEK_SET);
+}
+s32 lexer_stream_tell_file(void *ctx)
+{
+	FILE *fp = ctx;
+	return ftell(fp);
+}
+
+void lexer_stream_init_file(LexerStream *ls, FILE *fp)
+{
+	ls->ctx = fp;
+	ls->read = lexer_stream_read_file;
+	ls->seek = lexer_stream_seek_file;
+	ls->tell = lexer_stream_tell_file;
+}
 
 typedef struct
 {
@@ -98,8 +132,22 @@ void lexer_init(Lexer *l, Arena *arena, LexerStream *stream)
 	l->tokens_end = l->tokens;
 	if(setjmp(l->jmp_error))
 	{
+		printf("Lexer error\n");
 		exit(1);
 	}
+}
+
+void lexer_token_read_string(Lexer *lexer, Token *t, char *temp, s32 max_temp_size)
+{
+	LexerStream *ls = lexer->stream;
+	s32 pos = ls->tell(ls->ctx);
+	ls->seek(ls->ctx, t->position);
+	s32 n = max_temp_size - 1;
+	if(t->length < n)
+		n = t->length;
+	ls->read(ls->ctx, temp, n);
+	temp[n] = 0;
+	ls->seek(ls->ctx, pos);
 }
 
 u8 lexer_read_and_advance(Lexer *l)
@@ -128,6 +176,45 @@ void lexer_unget(Lexer *l)
 //	l->index--;
 //	if(l->index < 0)
 //		l->index = 0;
+}
+
+
+Token* lexer_read_string(Lexer *lexer, Token *t)
+{
+	// https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
+	u64 prime = 0x00000100000001B3;
+	u64 offset = 0xcbf29ce484222325;
+
+	u64 hash = offset;
+
+	t->token_type = k_ETokenTypeString;
+	//t->position = lexer->index;
+	t->position = lexer->stream->tell(lexer->stream->ctx);
+	int n = 0;
+	int escaped = 0;
+	while(1)
+	{
+		u8 ch = lexer_read_and_advance(lexer);
+		if(!ch)
+		{
+			//lexer_error(lexer, "Unexpected EOF");
+			break;
+		}
+		if(ch == '"' && !escaped)
+			break;
+		escaped = (!escaped && ch == '\\');
+		//if(n >= sizeof(t->string_value) - 1)
+			//lexer_error(lexer, "n >= sizeof(t->string_value) - 1");
+		//t->string_value[n] = ch;
+		++n;
+		
+		hash ^= ch;
+		hash *= prime;
+	}
+	t->hash = hash;
+	//t->string_value[n] = 0;
+	t->length = n;
+	return t;
 }
 
 Token* lexer_read_characters(Lexer *lexer, Token *t, k_ETokenType token_type, int (*cond)(u8 ch, int* undo))
@@ -186,7 +273,13 @@ int cond_numeric(u8 ch, int *undo)
 int cond_ident(u8 ch, int *undo)
 {
 	*undo = 1;
-	return !(ch >= 'a' && ch <= 'z') && !(ch >= 'A' && ch <= 'Z') && ch != '_';
+	return !(ch >= 'a' && ch <= 'z') && !(ch >= 'A' && ch <= 'Z') && ch != '_' && !(ch >= '0' && ch <= '9');
+}
+int cond_single_line_comment(u8 ch, int *undo)
+{
+	*undo = 1;
+	//\0 is implicitly handled by the if(!ch) check in lexer_read_characters
+	return ch == '\r' || ch == '\n';
 }
 
 void lexer_push_token(Lexer *lexer, Token *t)
@@ -199,13 +292,50 @@ void lexer_push_token(Lexer *lexer, Token *t)
 	}
 }
 
+int lexer_accept(Lexer *lexer, k_ETokenType tt, Token *t)
+{
+	Token _;
+	if(!t)
+		t = &_;
+	s32 pos = lexer->stream->tell(lexer->stream->ctx);
+	if(lexer_step(lexer, t))
+	{
+		// Unexpected EOF
+		longjmp(lexer->jmp_error, 1);
+	}
+	if(tt != t->token_type)
+	{
+		// Undo
+		lexer->stream->seek(lexer->stream->ctx, pos);
+		return 1;
+	}
+	return 0;
+}
+
+void lexer_expect(Lexer *lexer, k_ETokenType tt, Token *t)
+{
+	Token _;
+	if(!t)
+		t = &_;
+	if(lexer_accept(lexer, tt, t))
+	{
+		char expected[64];
+		char got[64] = {0};
+		char temp[64] = {0};
+		token_type_to_string(tt, expected, sizeof(expected));
+		token_type_to_string(t->token_type, got, sizeof(got));
+		lexer_token_read_string(lexer, t, temp, sizeof(temp));
+		printf("Expected '%s', got '%s' %d '%s'\n", expected, got, t->token_type, temp);
+		longjmp(lexer->jmp_error, 1); // TODO: pass error enum type value
+	}
+}
+
 int lexer_step(Lexer *lexer, Token *t)
 {
 	s32 index;
 	
 	t->next = NULL;
 	t->length = 1;
-	t->hash = 0;
 
 	u8 ch = 0;
 repeat:
@@ -215,11 +345,12 @@ repeat:
 	ch = lexer_read_and_advance(lexer);
 	if(!ch)
 		return 1;
+	t->hash = (0xcbf29ce484222325 ^ ch) * 0x00000100000001B3;
 	t->token_type = ch;
 	switch(ch)
 	{
 		case '"':
-			lexer_read_characters(lexer, t, k_ETokenTypeString, cond_string);
+			lexer_read_string(lexer, t);
 		break;
 		
 		case '\t':
@@ -227,7 +358,17 @@ repeat:
 		case '\r':
 		case '\n':
 			goto repeat;
-		
+		case '/':
+		{
+			ch = lexer_read_and_advance(lexer);
+			// TODO: handle multi-line comment /*
+			if(!ch || ch != '/')
+			{
+				lexer_unget(lexer); // We'll get \0 the next time we call lexer_step
+				return 0;
+			}
+			lexer_read_characters(lexer, t, k_ETokenTypeComment, cond_single_line_comment);
+		} break;
 		default:
 		{
 			if(ch >= '0' && ch <= '9')
