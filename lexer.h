@@ -132,7 +132,6 @@ void lexer_init(Lexer *l, Arena *arena, LexerStream *stream)
 	l->tokens_end = l->tokens;
 	if(setjmp(l->jmp_error))
 	{
-		printf("Lexer error\n");
 		exit(1);
 	}
 }

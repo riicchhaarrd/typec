@@ -6,12 +6,8 @@
 #include "hash.h"
 #include "util.h"
 //#include "parse/cstruct.h"
+#include "opts.h"
 #include "parse/type.h"
-
-typedef struct
-{
-	const char *mode;
-} CompilerOptions;
 
 void error(const char *fmt)
 {
@@ -30,18 +26,24 @@ int main(int argc, const char **argv, char **envp)
 	arena_init(&scratch, temp, bytes);
 
 	// getchar();
-	CompilerOptions opts = { 0 };
+	CompilerOptions opts = {
+		.mode = "c++",
+		.output = NULL
+	};
 
 	for(int i = 0; i < argc; ++i)
 	{
 		if(!strcmp(argv[i], "-mode"))
 		{
 			opts.mode = argv[++i];
+		} else if(!strcmp(argv[i], "-o"))
+		{
+			opts.output = argv[++i];
 		}
-		else if(!strcmp(argv[i], "-script"))
+		else if(!strcmp(argv[i], "-f"))
 		{
 			const char *path = argv[++i];
-			parse_type_file(path, &scratch);
+			parse_type_file(path, &scratch, &opts);
 #if 0
 			char *buffer;
 			if(!read_file(path, &scratch, &buffer))
@@ -51,7 +53,7 @@ int main(int argc, const char **argv, char **envp)
 #endif
 		}
 	}
-	printf("memory used: %d KB\n", (bytes - (scratch.end - scratch.beg)) / 1000);
+	// printf("memory used: %d KB\n", (bytes - (scratch.end - scratch.beg)) / 1000);
 	// printf("mode = %s\n", opts.mode);
 	return 0;
 }

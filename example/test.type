@@ -1,0 +1,27 @@
+struct Player
+{
+	replicated:
+		int32 health %2;
+		string name;
+		vec3 origin @ quantized %0;
+};
+enum ConnectionState
+{
+	Disconnected,
+	Connnecting,
+	Connected
+};
+
+enum DataType
+{
+	Integer,
+	Float,
+	String
+};
+
+bitflags Mode
+{
+	Read,
+	Write,
+	Execute
+};
