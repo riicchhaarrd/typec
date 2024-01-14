@@ -1,10 +1,28 @@
-struct Player
+component Health
 {
-	replicated:
-		int32 health %2;
-		string name;
-		vec3 origin @ quantized %0;
+	int32 health;
+	int32 maxhealth;
 };
+
+message Pong
+{
+	int32 ping;
+};
+
+private struct Player
+{
+	int32 health % 2;
+	string name;
+	vec3 origin % 0;
+};
+
+public struct Vec3
+{
+	float x;
+	float y;
+	float z;
+};
+
 enum ConnectionState
 {
 	Disconnected,
