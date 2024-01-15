@@ -2,6 +2,7 @@
 #define PARSE_TYPE_H
 
 // TODO
+// - Initial values for fields, it's why I opted to use '%' for specifying field order instead of using '='.
 // - Pass through "native" types e.g HWND
 // - Error checking for duplicate field and type names, indices etc.
 // - Add varint and zigzag encoding
