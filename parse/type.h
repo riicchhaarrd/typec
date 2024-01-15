@@ -258,9 +258,18 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 				entry->name[0] = 0;
 				entry->fields = NULL;
 				
-				if(t.hash == id_public || t.hash == id_private)
+				if(t.hash == id_public || t.hash == id_private || t.hash == id_protected)
 				{
-					entry->visibility = t.hash == id_public ? k_EVisibilityPublic : k_EVisibilityPrivate;
+					if(t.hash == id_private)
+					{
+						entry->visibility = k_EVisibilityPrivate;
+					} else if(t.hash == id_public)
+					{
+						entry->visibility = k_EVisibilityPublic;
+					} else if(t.hash == id_protected)
+					{
+						entry->visibility = k_EVisibilityProtected;
+					}
 					lexer_expect(lexer, k_ETokenTypeIdentifier, &t);
 				}
 				k_EVisibility field_visibility = k_EVisibilityPrivate;
@@ -422,7 +431,7 @@ void write_definitions(TypeEntry *entries)
 			case k_ETypeEntryTypeMessage:
 			case k_ETypeEntryTypeComponent:
 				printf("typedef struct\n{\n");
-				if(entries->visibility == k_EVisibilityPublic)
+				if(entries->visibility != k_EVisibilityPrivate)
 				{
 					printf("\tint32_t type_; // Struct metadata, DO NOT REMOVE!\n");
 					//printf("\tuint64_t hash_;\n");
@@ -487,16 +496,16 @@ void write_visitor_entry(TypeEntry *it)
 	{
 		Field *fields;
 		fields = it->fields;
-		printf("void vt_fn_initialize_type_%d_(void *data)\n{\n", it->index);
+		printf("static void vt_fn_initialize_type_%d_(void *data)\n{\n", it->index);
 		printf("\t%s *inst = (%s*)data;\n", it->name, it->name);
-		if(it->visibility == k_EVisibilityPublic)
+		if(it->visibility != k_EVisibilityPrivate)
 		{
 			printf("\tinst->type_ = %d;\n", it->index);
 		}
 		printf("}\n\n");
 		fields = it->fields;
 		//printf("int vt_fn_visit_type_%d_(void *data, int (*visit_field)(void *ctx, const char *key, void *value, k_EPrimitiveType field_type), void *ctx)\n{\n", it->index);
-		printf("int vt_fn_visit_type_%d_(void *data, TypeFieldVisitor *visitor, void *ctx)\n{\n", it->index);
+		printf("static int vt_fn_visit_type_%d_(void *data, TypeFieldVisitor *visitor, void *ctx)\n{\n", it->index);
 		printf("\t%s *inst = (%s*)data;\n\tint changed_count = 0;\n", it->name, it->name);
 		while(fields)
 		{
@@ -536,36 +545,67 @@ typedef int (*VisitFn)(void *instance, TypeFieldVisitor *visitor, void *ctx);
 typedef void (*InitializeFn)(void *instance);
 typedef struct
 {
+	const char *name;
 	VisitFn visit;
 	InitializeFn initialize;
 	size_t size;
-} VTableEntry;	
+} VTableEntry;
+
 )");
 	printf("static const VTableEntry vtable_entries[] = {\n");
 	while(entries)
 	{
-		if(entry_type_is_structure(entries->entry_type))
+		if(entry_type_is_structure(entries->entry_type) && entries->visibility != k_EVisibilityPrivate)
 		{
-			printf("\t{(VisitFn)vt_fn_visit_type_%d_, (InitializeFn)vt_fn_initialize_type_%d_, sizeof(%s)},\n", entries->index, entries->index, entries->name);
+			if(entries->visibility == k_EVisibilityProtected)
+			{
+				printf("\t{NULL, (VisitFn)vt_fn_visit_type_%d_, (InitializeFn)vt_fn_initialize_type_%d_, sizeof(%s)},\n", entries->index, entries->index, entries->name);
+			} else {
+				printf("\t{\"%s\", (VisitFn)vt_fn_visit_type_%d_, (InitializeFn)vt_fn_initialize_type_%d_, sizeof(%s)},\n", entries->name, entries->index, entries->index, entries->name);
+			}
 		} else {
-			printf("\t{0, 0},\n");
+			printf("\t{0, 0, 0},\n");
 		}
 		entries = entries->next;
 	}
-	printf("\t{0, 0}\n};\n");
+	printf("\t{0, 0, 0}\n};\n");
 	printf(R"(
-int visit(void *data, TypeFieldVisitor *visitor, void *ctx)
+static int visit(void *data, TypeFieldVisitor *visitor, void *ctx)
 {
 	int32_t type_index = *(int32_t*)data;
+	int32_t max_entries = sizeof(vtable_entries) / sizeof(vtable_entries[0]);
+	if(type_index < 0 || type_index >= max_entries)
+		return 0;
 	return vtable_entries[type_index].visit(data, visitor, ctx);
 }
-size_t type_sizeof(int32_t type_index)
+static int type_visit(void *data, TypeFieldVisitor *visitor, void *ctx, int32_t type_index)
 {
+	int32_t max_entries = sizeof(vtable_entries) / sizeof(vtable_entries[0]);
+	if(type_index < 0 || type_index >= max_entries)
+		return 0;
+	return vtable_entries[type_index].visit(data, visitor, ctx);
+}
+static size_t type_sizeof(int32_t type_index)
+{
+	int32_t max_entries = sizeof(vtable_entries) / sizeof(vtable_entries[0]);
+	if(type_index < 0 || type_index >= max_entries)
+		return 0;
 	return vtable_entries[type_index].size;
 }
-void type_init(void *data, int32_t type_index)
+static const char* type_name(int32_t type_index)
 {
+	int32_t max_entries = sizeof(vtable_entries) / sizeof(vtable_entries[0]);
+	if(type_index < 0 || type_index >= max_entries)
+		return NULL;
+	return vtable_entries[type_index].name;
+}
+static int type_init(void *data, int32_t type_index)
+{
+	int32_t max_entries = sizeof(vtable_entries) / sizeof(vtable_entries[0]);
+	if(type_index < 0 || type_index >= max_entries)
+		return 1;
 	vtable_entries[type_index].initialize(data);
+	return 0;
 }
 )");
 }
@@ -651,7 +691,10 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 			printf("typedef enum\n{\n");
 			while(it)
 			{
-				printf("\tk_EType%s,\n", it->name);
+				if(it->visibility != k_EVisibilityPrivate)
+				{
+					printf("\tk_EType%s = %d,\n", it->name, it->index);
+				}
 				it = it->next;
 			}
 			printf("} k_EType;\n\n");
