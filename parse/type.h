@@ -1,6 +1,13 @@
 #ifndef PARSE_TYPE_H
 #define PARSE_TYPE_H
 
+// TODO
+// - Pass through "native" types e.g HWND
+// - Add varint and zigzag encoding
+// - For fixed size arrays, maybe encode them as variable length but add a check whether that amount of data is actually present when decoded.
+// - More agressive compression / packing for structs of type 'Message'
+// - More padding/alignment fixing for structs of type 'Component'
+
 /*
 	struct Player
 	{
