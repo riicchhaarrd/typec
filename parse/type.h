@@ -213,7 +213,6 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 	u64 id_message = fnv1a_64("message");
 	//char temp[64];
 	TypeEntry *entries = NULL;
-	int replicated = 0;
 	char index_str[64];
 	while(!lexer_step(lexer, &t))
 	{
@@ -224,6 +223,8 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 			break;
 			case k_ETokenTypeIdentifier:
 			{
+				int replicated = 0;
+				
 				TypeEntry *entry = new(lexer->arena, TypeEntry, 1);
 				if(!entries)
 				{
