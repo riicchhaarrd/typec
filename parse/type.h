@@ -34,6 +34,7 @@
 typedef enum
 {
 	k_EVisibilityPrivate,
+	k_EVisibilityProtected,
 	k_EVisibilityPublic
 } k_EVisibility;
 
@@ -225,6 +226,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 	u64 id_replicated = fnv1a_64("replicated");
 	u64 id_public = fnv1a_64("public");
 	u64 id_private = fnv1a_64("private");
+	u64 id_protected = fnv1a_64("protected");
 	u64 id_component = fnv1a_64("component");
 	u64 id_message = fnv1a_64("message");
 	//char temp[64];
@@ -300,6 +302,10 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 						} else if(field_type.hash == id_public)
 						{
 							field_visibility = k_EVisibilityPublic;
+							lexer_expect(lexer, ':', NULL);
+						} else if(field_type.hash == id_protected)
+						{
+							field_visibility = k_EVisibilityProtected;
 							lexer_expect(lexer, ':', NULL);
 						} else {
 							Field *field = new(lexer->arena, Field, 1);
@@ -494,13 +500,13 @@ void write_visitor_entry(TypeEntry *it)
 		while(fields)
 		{
 			s32 dt_index = data_type_index_by_hash(fields->type_hash);
-			if(dt_index != -1)
+			if(dt_index != -1 && fields->visibility != k_EVisibilityPrivate)
 			{
 				printf("\tif(visitor->visit_%s)\n\t{\n", data_types[dt_index].name);
 				
 				char field_name[256] = {0};
 				char array_index_str[4] = {0};
-				if(fields->visibility == k_EVisibilityPrivate)
+				if(fields->visibility == k_EVisibilityProtected)
 				{
 					snprintf(field_name, sizeof(field_name), "NULL");
 				} else {
