@@ -1,0 +1,30 @@
+public message MsgConnect
+{
+	public:
+		char name[32];
+	protected:
+		int some_option;
+	private:
+		int some_secret_key;
+};
+
+public message MsgText
+{
+	char message[256];
+};
+
+public message MsgDisconnect
+{
+	char reason[32];
+};
+
+protected message Packet
+{
+	protected:
+		int16 source_port;
+		int32 sequence_number;
+		int32 acknowledge_number;
+		
+		int32 time;
+		int32 message_count;
+};
