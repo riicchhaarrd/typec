@@ -2,6 +2,7 @@
 #define PARSE_TYPE_H
 
 // TODO
+// - Implement ability to set display names / labels for fields.
 // - Initial values for fields, it's why I opted to use '%' for specifying field order instead of using '='.
 // - Pass through "native" types e.g HWND
 // - Error checking for duplicate field and type names, indices etc.
