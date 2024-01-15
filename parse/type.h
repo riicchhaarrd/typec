@@ -22,6 +22,12 @@
 	};
 */
 
+typedef enum
+{
+	k_EVisibilityPrivate,
+	k_EVisibilityPublic
+} k_EVisibility;
+
 typedef struct Field_s
 {
 	char type[64];
@@ -31,7 +37,9 @@ typedef struct Field_s
 	u64 name_hash;
 	int replicated;
 	s32 index;
+	k_EVisibility visibility;
 	struct Field_s *next;
+	s32 element_count; //e.g vec3 has 3 elements, default 1, -1 variable length
 } Field;
 
 typedef enum
@@ -70,18 +78,12 @@ static const char *entry_type_to_string(k_ETypeEntryType type)
 	return "?";
 }
 
-typedef enum
-{
-	k_ETypeEntryVisibilityPrivate,
-	k_ETypeEntryVisibilityPublic
-} k_ETypeEntryVisibility;
-
 typedef struct TypeEntry_s
 {
 	struct TypeEntry_s *next;
 	k_ETypeEntryType entry_type;
 	char name[64];
-	k_ETypeEntryVisibility visibility;
+	k_EVisibility visibility;
 	s32 index;
 	Field *fields;
 	s32 type_index;
@@ -126,7 +128,12 @@ void data_type_string_deserialize(struct DataType_s *dt, TypeEntry *entry, Field
 
 void data_type_primitive_definition(struct DataType_s *dt, TypeEntry *entry, Field *field)
 {
-	printf("\t%s %s", dt->name, field->name);
+	if(field->element_count == 1)
+	{
+		printf("\t%s %s", dt->name, field->name);
+	} else {
+		printf("\t%s %s[%d]", dt->name, field->name, field->element_count);
+	}
 }
 void data_type_primitive_serialize(struct DataType_s *dt, TypeEntry *entry, Field *field)
 {
@@ -235,16 +242,16 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 				}
 				entry->index = type_index++;
 				entry->next = NULL;
-				entry->visibility = k_ETypeEntryVisibilityPrivate;
+				entry->visibility = k_EVisibilityPrivate;
 				entry->name[0] = 0;
 				entry->fields = NULL;
 				
 				if(t.hash == id_public || t.hash == id_private)
 				{
-					entry->visibility = t.hash == id_public ? k_ETypeEntryVisibilityPublic : k_ETypeEntryVisibilityPrivate;
+					entry->visibility = t.hash == id_public ? k_EVisibilityPublic : k_EVisibilityPrivate;
 					lexer_expect(lexer, k_ETokenTypeIdentifier, &t);
 				}
-				
+				k_EVisibility field_visibility = k_EVisibilityPrivate;
 				u64 id_hash = t.hash;
 				Token name;
 				lexer_expect(lexer, k_ETokenTypeIdentifier, &name);
@@ -276,10 +283,20 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 						{
 							replicated = 1;
 							lexer_expect(lexer, ':', NULL);
+						} else if(field_type.hash == id_private)
+						{
+							field_visibility = k_EVisibilityPrivate;
+							lexer_expect(lexer, ':', NULL);
+						} else if(field_type.hash == id_public)
+						{
+							field_visibility = k_EVisibilityPublic;
+							lexer_expect(lexer, ':', NULL);
 						} else {
 							Field *field = new(lexer->arena, Field, 1);
 							field->next = NULL;
 							field->index = -1;
+							field->visibility = field_visibility;
+							field->element_count = 1;
 							field->replicated = replicated;
 							field->type_hash = field_type.hash;
 							s32 dt_index = data_type_index_by_hash(field_type.hash);
@@ -298,6 +315,15 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 							//printf("field_type: %s\n", field->type);
 							lexer_token_read_string(lexer, &field_name, field->name, sizeof(field->name));
 							//printf("field_name: %s\n", field->name);
+							
+							if(!lexer_accept(lexer, '[', NULL))
+							{
+								Token num_of_elements_tk;
+								lexer_expect(lexer, k_ETokenTypeNumber, &num_of_elements_tk);
+								lexer_token_read_string(lexer, &num_of_elements_tk, index_str, sizeof(index_str));
+								field->element_count = atoi(index_str);
+								lexer_expect(lexer, ']', NULL);
+							}
 							
 							if(!lexer_accept(lexer, '@', NULL))
 							{
@@ -334,6 +360,8 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 						Field *field = new(lexer->arena, Field, 1);
 						field->next = NULL;
 						field->index = -1;
+						field->visibility = field_visibility;
+						field->element_count = 1;
 						field->replicated = replicated;
 						field->type[0] = 0;
 						Token enum_value;
@@ -377,10 +405,11 @@ void write_definitions(TypeEntry *entries)
 			case k_ETypeEntryTypeMessage:
 			case k_ETypeEntryTypeComponent:
 				printf("typedef struct\n{\n");
-				printf("\t// BEGIN OF STRUCT META DATA\n");
-				printf("\tint32_t type_;\n");
-				//printf("\tuint64_t hash_;\n");
-				printf("\t// END OF STRUCT META DATA\n");
+				if(entries->visibility == k_EVisibilityPublic)
+				{
+					printf("\tint32_t type_; // Struct metadata, DO NOT REMOVE!\n");
+					//printf("\tuint64_t hash_;\n");
+				}
 			break;
 		}
 		Field *fields = entries->fields;
@@ -422,12 +451,12 @@ void write_definitions(TypeEntry *entries)
 		{
 			case k_ETypeEntryTypeEnum:
 			case k_ETypeEntryTypeFlags:
-				printf("} k_E%s;\n", entries->name);
+				printf("} k_E%s;\n\n", entries->name);
 			break;
 			default:
 				if(entry_type_is_structure(entries->entry_type))
 				{
-					printf("} %s; //%s %d, total index: %d\n", entries->name, entry_type_to_string(entries->entry_type), entries->type_index, entries->index);
+					printf("} %s; //%s %d, total index: %d\n\n", entries->name, entry_type_to_string(entries->entry_type), entries->type_index, entries->index);
 				}
 			break;
 		}
@@ -435,29 +464,19 @@ void write_definitions(TypeEntry *entries)
 	}
 }
 
-void write_serialize_entry(TypeEntry *it)
+void write_visitor_entry(TypeEntry *it)
 {
 	if(entry_type_is_structure(it->entry_type))
 	{
 		Field *fields;
 		fields = it->fields;
-		printf("void vt_fn_serialize_type_%d_(void *data, FILE *fp, int writing)\n{\n", it->index);
-		printf("\t%s *inst = (%s*)data;\n", it->name, it->name);
-		while(fields)
-		{
-			printf("\tif(writing)\n\t{\n");
-			printf("\t\tfwrite(&inst->%s, sizeof(inst->%s), 1, fp);\n", fields->name, fields->name);
-			printf("\t}\n\telse\n\t{\n");
-			printf("\t\tfread(&inst->%s, sizeof(inst->%s), 1, fp);\n", fields->name, fields->name);
-			printf("\t}\n");
-			fields = fields->next;
-		}
-		printf("}\n");
-		fields = it->fields;
 		printf("void vt_fn_initialize_type_%d_(void *data)\n{\n", it->index);
 		printf("\t%s *inst = (%s*)data;\n", it->name, it->name);
-		printf("\tinst->type_ = %d;\n", it->index);
-		printf("}\n");
+		if(it->visibility == k_EVisibilityPublic)
+		{
+			printf("\tinst->type_ = %d;\n", it->index);
+		}
+		printf("}\n\n");
 		fields = it->fields;
 		//printf("int vt_fn_visit_type_%d_(void *data, int (*visit_field)(void *ctx, const char *key, void *value, k_EPrimitiveType field_type), void *ctx)\n{\n", it->index);
 		printf("int vt_fn_visit_type_%d_(void *data, TypeFieldVisitor *visitor, void *ctx)\n{\n", it->index);
@@ -468,43 +487,40 @@ void write_serialize_entry(TypeEntry *it)
 			if(dt_index != -1)
 			{
 				printf("\tif(visitor->visit_%s)\n\t{\n", data_types[dt_index].name);
-				if(it->visibility == k_ETypeEntryVisibilityPrivate)
+				
+				char field_name[256] = {0};
+				char array_index_str[4] = {0};
+				if(fields->visibility == k_EVisibilityPrivate)
 				{
-					printf("\t\tchanged_count += visitor->visit_%s(ctx, NULL, (%s*)&inst->%s);\n", data_types[dt_index].name, data_types[dt_index].name, fields->name);
+					snprintf(field_name, sizeof(field_name), "NULL");
 				} else {
-					printf("\t\tchanged_count += visitor->visit_%s(ctx, \"%s\", (%s*)&inst->%s);\n", data_types[dt_index].name, fields->name, data_types[dt_index].name, fields->name);
+					
+					snprintf(field_name, sizeof(field_name), "\"%s\"", fields->name);
 				}
+				if(fields->element_count > 1)
+				{
+					strcpy(array_index_str, "[0]");
+				}
+				printf("\t\tchanged_count += visitor->visit_%s(ctx, %s, (%s*)&inst->%s%s, %d);\n", data_types[dt_index].name, field_name, data_types[dt_index].name, fields->name, array_index_str, fields->element_count);
 				printf("\t}\n\telse if(visitor->visit)\n\t{\n");
-				if(it->visibility == k_ETypeEntryVisibilityPrivate)
-				{
-					printf("\t\tchanged_count += visitor->visit(ctx, NULL, (void*)&inst->%s, sizeof(%s));\n", fields->name, data_types[dt_index].name);
-				} else {
-					printf("\t\tchanged_count += visitor->visit(ctx, \"%s\", (void*)&inst->%s, sizeof(%s));\n", fields->name, fields->name, data_types[dt_index].name);
-				}
+				printf("\t\tchanged_count += visitor->visit(ctx, %s, (void*)&inst->%s%s, sizeof(%s), %d);\n", field_name, fields->name, array_index_str, data_types[dt_index].name, fields->element_count);
 				printf("\t}\n");
 			}
 			fields = fields->next;
 		}
-		printf("\treturn changed_count;\n}\n");
+		printf("\treturn changed_count;\n}\n\n");
 	}
 }
 
-void write_serialize_table(TypeEntry *entries)
+void write_vtable(TypeEntry *entries)
 {
 printf(R"(
-
-typedef void (*SerializeFn)(void *instance, FILE *fp, int writing);
-//typedef int (*VisitFn)(void *instance, int (*visit_field)(void *ctx, const char *key, void *value), void *ctx);
 typedef int (*VisitFn)(void *instance, TypeFieldVisitor *visitor, void *ctx);
 typedef void (*InitializeFn)(void *instance);
 typedef struct
 {
-	SerializeFn serialize;
 	VisitFn visit;
 	InitializeFn initialize;
-	//void (*serialize)(void *instance, FILE *fp, int writing);
-	//int (*visit)(void *instance, int (*visit_field)(void *ctx, const char *key, void *value), void *ctx);
-	//void (*initialize)(void *instance);
 	size_t size;
 } VTableEntry;	
 )");
@@ -513,25 +529,14 @@ typedef struct
 	{
 		if(entry_type_is_structure(entries->entry_type))
 		{
-			printf("\t{(SerializeFn)vt_fn_serialize_type_%d_, (VisitFn)vt_fn_visit_type_%d_, (InitializeFn)vt_fn_initialize_type_%d_, sizeof(%s)},\n", entries->index, entries->index, entries->index, entries->name);
+			printf("\t{(VisitFn)vt_fn_visit_type_%d_, (InitializeFn)vt_fn_initialize_type_%d_, sizeof(%s)},\n", entries->index, entries->index, entries->name);
 		} else {
 			printf("\t{0, 0},\n");
 		}
 		entries = entries->next;
 	}
-	printf("\t0\n};\n");
+	printf("\t{0, 0}\n};\n");
 	printf(R"(
-void serialize(FILE *fp, void *data)
-{
-	int32_t type_index = *(int32_t*)data;
-	vtable_entries[type_index].serialize(data, fp, 1);
-}
-void deserialize(FILE *fp, void *data)
-{
-	int32_t type_index = *(int32_t*)data;
-	vtable_entries[type_index].serialize(data, fp, 0);
-}
-//int visit(void *data, int (*visit_field)(void *ctx, const char *key, void *value), void *ctx)
 int visit(void *data, TypeFieldVisitor *visitor, void *ctx)
 {
 	int32_t type_index = *(int32_t*)data;
@@ -546,89 +551,6 @@ void type_init(void *data, int32_t type_index)
 	vtable_entries[type_index].initialize(data);
 }
 )");
-}
-void write_reflection(TypeEntry *entries)
-{
-	
-	for(s32 i = 0; data_types[i].name; ++i)
-	{
-		printf("int refl_field_visit_data_type_%s(void *ctx, const char *key, void *value);\n", data_types[i].name);
-	}
-	
-	printf(R"(	
-typedef struct ReflStructField_s
-{
-	const char *name;
-	const char *type;
-	size_t offset;
-	int (*visit)(void *ctx, const char *key, void *value); // returns 1 if visitor changed value, returns 0 if nothing changed
-} ReflStructField;
-
-typedef struct ReflEnumValue_s
-{
-	const char *name;
-	uint32_t value;
-} ReflEnumValue;
-
-)");
-	TypeEntry *it = entries;
-
-	while(it)
-	{
-		if(it->entry_type == k_ETypeEntryTypeStruct)
-		{
-			printf("static const ReflStructField %s_refl_fields[] = {\n", it->name);
-			Field *fields = it->fields;
-			s32 field_index = 0;
-			while(fields)
-			{
-				printf("\t{\"%s\", \"%s\", offsetof(%s, %s), refl_field_visit_data_type_%s}",
-					fields->name,
-					fields->type,
-					it->name, fields->name,
-					fields->type,
-					it->name,
-					fields->name
-				);
-				if(fields->next)
-					printf(",\n");
-				else
-					printf("\n");
-				++field_index;
-				fields = fields->next;
-			}
-			printf("};\n");
-		} else if(it->entry_type == k_ETypeEntryTypeEnum || it->entry_type == k_ETypeEntryTypeFlags)
-		{
-			printf("static const ReflEnumValue %s_refl_values[] = {\n", it->name);
-			Field *fields = it->fields;
-			s32 field_index = 0;
-			while(fields)
-			{
-				if(it->entry_type == k_ETypeEntryTypeEnum)
-				{
-					printf("\t{\"%s\", %d}",
-						fields->name,
-						field_index
-					);
-				} else if(it->entry_type == k_ETypeEntryTypeFlags)
-				{
-					printf("\t{\"%s\", %d}",
-						fields->name,
-						(1 << field_index)
-					);
-				}
-				if(fields->next)
-					printf(",\n");
-				else
-					printf("\n");
-				++field_index;
-				fields = fields->next;
-			}
-			printf("};\n");
-		}
-		it = it->next;
-	}
 }
 
 void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
@@ -655,7 +577,6 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 		printf("#include <stddef.h>\n");
 		printf("\n");
 		write_definitions(entries);
-		//write_reflection(entries);
 		
 		{
 			TypeEntry *it = entries;
@@ -666,16 +587,16 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 				printf("\tk_EType%s,\n", it->name);
 				it = it->next;
 			}
-			printf("} k_EType;\n");
+			printf("} k_EType;\n\n");
 		}
 		{
 			printf("typedef struct\n{\n");
 			for(s32 i = 0; data_types[i].name; ++i)
 			{
-				printf("\tint (*visit_%s)(void *ctx, const char *key, %s *value);\n", data_types[i].name, data_types[i].name);
+				printf("\tint (*visit_%s)(void *ctx, const char *key, %s *value, size_t num_elements);\n", data_types[i].name, data_types[i].name);
 			}
-			printf("\tint (*visit)(void *ctx, const char *key, void *value, size_t size); // Fallback in case visit_X is NULL\n");
-			printf("} TypeFieldVisitor;\n");
+			printf("\tint (*visit)(void *ctx, const char *key, void *value, size_t size, size_t num_elements); // Fallback in case visit_X is NULL\n");
+			printf("} TypeFieldVisitor;\n\n");
 		}
 		#if 0
 		{
@@ -684,7 +605,7 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 			{
 				printf("\tk_EPrimitiveType%c%s,\n", data_types[i].name[0] - 'a' + 'A', data_types[i].name + 1);
 			}
-			printf("} k_EPrimitiveType;\n");
+			printf("} k_EPrimitiveType;\n\n");
 		}
 		#endif
 		{
@@ -692,10 +613,10 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 
 			while(it)
 			{
-				write_serialize_entry(it);
+				write_visitor_entry(it);
 				it = it->next;
 			}
-			write_serialize_table(entries);
+			write_vtable(entries);
 		}
 		printf("#endif\n");
 	} else {
