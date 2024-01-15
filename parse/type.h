@@ -260,6 +260,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 					lexer_expect(lexer, k_ETokenTypeIdentifier, &t);
 				}
 				k_EVisibility field_visibility = k_EVisibilityPrivate;
+				s32 field_index = 0;
 				u64 id_hash = t.hash;
 				Token name;
 				lexer_expect(lexer, k_ETokenTypeIdentifier, &name);
@@ -302,7 +303,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 						} else {
 							Field *field = new(lexer->arena, Field, 1);
 							field->next = NULL;
-							field->index = -1;
+							field->index = field_index;
 							field->visibility = field_visibility;
 							field->element_count = 1;
 							field->replicated = replicated;
@@ -344,7 +345,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 								Token index_token;
 								lexer_expect(lexer, k_ETokenTypeNumber, &index_token);
 								lexer_token_read_string(lexer, &index_token, index_str, sizeof(index_str));
-								field->index = atoi(index_str);
+								field_index = field->index = atoi(index_str);
 							}
 							
 							if(!fields)
@@ -561,6 +562,46 @@ void type_init(void *data, int32_t type_index)
 )");
 }
 
+int sort_fields_compare(Field *a, Field *b)
+{
+	return a->index - b->index;
+}
+
+void sort_fields(Field **fields, int (*compare)(Field *a, Field *b))
+{
+	if(!*fields)
+		return; // Empty
+	
+	if(!(*fields)->next)
+		return; // Single field
+	
+	int swapped;
+	do
+	{
+		Field **it = fields;
+		swapped = 0;
+		while((*it)->next)
+		{
+			int result = compare((*it), (*it)->next);
+			/*
+				a = 1
+				b = 2
+				return a - b; // Returns < 0, do nothing.
+			*/
+			if(result > 0)
+			{
+				Field *tmp = (*it); // Save current
+				*it = (*it)->next; // Set current to next
+				// Swap next to point to eachother
+				tmp->next = (*it)->next;
+				(*it)->next = tmp;
+				swapped = 1;
+			}
+			it = &((*it)->next);
+		}
+	} while(swapped);
+}
+
 void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 {
 	initialize_data_type_hashes();
@@ -577,6 +618,16 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 
 	TypeEntry *entries;
 	parse_type(&lexer, &entries);
+	
+	{
+		TypeEntry *it = entries;
+		while(it)
+		{
+			sort_fields(&it->fields, sort_fields_compare);
+			it = it->next;
+		}
+	}
+	
 	if(!strcmp(opts->mode, "c") || !strcmp(opts->mode, "c++"))
 	{
 		printf("#ifndef FIXME_H\n#define FIXME_H\n");
