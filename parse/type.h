@@ -3,6 +3,7 @@
 
 // TODO
 // - Pass through "native" types e.g HWND
+// - Error checking for duplicate field and type names, indices etc.
 // - Add varint and zigzag encoding
 // - For fixed size arrays, maybe encode them as variable length but add a check whether that amount of data is actually present when decoded.
 // - More agressive compression / packing for structs of type 'Message'
