@@ -1,3 +1,6 @@
+// ./build && ./typec -f example/net/messages.type > example/net/messages.type.h
+// gcc client.c serialize.c -o client && ./client
+
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
