@@ -1,5 +1,6 @@
 #ifndef PARSE_TYPE_H
 #define PARSE_TYPE_H
+#include <stdbool.h>
 
 // TODO
 // - Implement ability to set display names / labels for fields.
@@ -38,9 +39,16 @@ typedef enum
 	k_EVisibilityProtected,
 	k_EVisibilityPublic
 } k_EVisibility;
+typedef enum
+{
+	k_EFieldDataTypePrimitive,
+	k_EFieldDataTypeCustom,
+	k_EFieldDataTypeForward //TODO: forward declared type, e.g HWND
+} k_EFieldDataType;
 
 typedef struct Field_s
 {
+	k_EFieldDataType data_type;
 	char type[64];
 	char name[64];
 	char metadata[64];
@@ -139,11 +147,15 @@ void data_type_string_deserialize(struct DataType_s *dt, TypeEntry *entry, Field
 
 void data_type_primitive_definition(struct DataType_s *dt, TypeEntry *entry, Field *field)
 {
+}
+
+void write_field_definition(Field *field)
+{
 	if(field->element_count == 1)
 	{
-		printf("\t%s %s", dt->name, field->name);
+		printf("\t%s %s", field->type, field->name);
 	} else {
-		printf("\t%s %s[%d]", dt->name, field->name, field->element_count);
+		printf("\t%s %s[%d]", field->type, field->name, field->element_count);
 	}
 }
 void data_type_primitive_serialize(struct DataType_s *dt, TypeEntry *entry, Field *field)
@@ -204,6 +216,16 @@ void initialize_data_type_hashes()
 	}
 }
 
+bool is_identifier_reserved(const char *ident)
+{
+	for(s32 i = 0; data_types[i].name; ++i)
+	{
+		if(!strcmp(data_types[i].name, ident))
+			return true;
+	}
+	return false;
+}
+
 int data_type_index_by_hash(u64 hash)
 {
 	for(s32 i = 0; data_types[i].name; ++i)
@@ -212,6 +234,18 @@ int data_type_index_by_hash(u64 hash)
 			return i;
 	}
 	return -1;
+}
+
+TypeEntry *type_entry_by_name(TypeEntry **entries, const char *s)
+{
+	TypeEntry *it = (*entries);
+	while(it)
+	{
+		if(!strcmp(it->name, s))
+			return it;
+		it = it->next;
+	}
+	return NULL;
 }
 
 void parse_type(Lexer *lexer, TypeEntry **entries_out)
@@ -319,7 +353,9 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 							lexer_expect(lexer, ':', NULL);
 						} else {
 							Field *field = new(lexer->arena, Field, 1);
+							lexer_token_read_string(lexer, &field_type, field->type, sizeof(field->type));
 							field->next = NULL;
+							field->data_type = k_EFieldDataTypePrimitive;
 							field->index = field_index;
 							field->visibility = field_visibility;
 							field->element_count = 1;
@@ -328,18 +364,27 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 							s32 dt_index = data_type_index_by_hash(field_type.hash);
 							if(dt_index == -1)
 							{
-								for(s32 k = 0; data_types[k].name; ++k)
+								TypeEntry *fnd = type_entry_by_name(entries_out, field->type);
+								if(!fnd)
 								{
-									printf("%s, ", data_types[k].name);
+									for(s32 k = 0; data_types[k].name; ++k)
+									{
+										printf("%s, ", data_types[k].name);
+									}
+									printf("\n");
+									lexer_error(lexer, "Field type must be one of the following above or a user-defined type.");
 								}
-								printf("\n");
-								lexer_error(lexer, "Field type must be one of the following above.");
+								else
+								{
+									field->data_type = k_EFieldDataTypeCustom;
+								}
 							}
 							lexer_expect(lexer, k_ETokenTypeIdentifier, &field_name);
 							field->name_hash = field_name.hash;
-							lexer_token_read_string(lexer, &field_type, field->type, sizeof(field->type));
 							//printf("field_type: %s\n", field->type);
 							lexer_token_read_string(lexer, &field_name, field->name, sizeof(field->name));
+							if(is_identifier_reserved(field->name))
+								lexer_error(lexer, "Field name cannot be a reserved identifier.");
 							//printf("field_name: %s\n", field->name);
 							
 							if(!lexer_accept(lexer, '[', NULL))
@@ -384,6 +429,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out)
 						if(!lexer_accept(lexer, '}', NULL))
 							break;
 						Field *field = new(lexer->arena, Field, 1);
+						field->data_type = k_EFieldDataTypePrimitive;
 						field->next = NULL;
 						field->index = -1;
 						field->visibility = field_visibility;
@@ -462,10 +508,7 @@ void write_definitions(TypeEntry *entries)
 				{
 					if(entry_type_is_structure(entries->entry_type))
 					{
-						//printf("\t%s", fields->name);
-						s32 dt_index = data_type_index_by_hash(fields->type_hash);
-						DataType *dt = &data_types[dt_index];
-						dt->definition(dt, entries, fields);
+						write_field_definition(fields);
 						printf(";\n");
 					}
 				} break;
@@ -490,7 +533,52 @@ void write_definitions(TypeEntry *entries)
 	}
 }
 
-void write_visitor_entry(TypeEntry *it)
+void write_visitor_entry_field(TypeEntry **entries, Field *field)
+{
+	if(field->visibility == k_EVisibilityPrivate)
+		return;
+	char field_name[256] = {0};
+	char array_index_str[4] = {0};
+	if(field->visibility == k_EVisibilityProtected)
+	{
+		snprintf(field_name, sizeof(field_name), "NULL");
+	} else {
+		
+		snprintf(field_name, sizeof(field_name), "\"%s\"", field->name);
+	}
+	if(field->element_count > 1)
+	{
+		strcpy(array_index_str, "[0]");
+	}
+	s32 dt_index = data_type_index_by_hash(field->type_hash);
+	if(dt_index == -1)
+	{
+		TypeEntry *fnd = type_entry_by_name(entries, field->type);
+		if(!fnd)
+		{
+			printf("#error \"Can't find type '%s'\"\n", field->type);
+			return;
+		}
+		if(field->element_count > 1)
+		{
+			printf("\tfor(int i = 0; i < %d; ++i)\n\t{\n", field->element_count);
+			printf("\t\tchanged_count += vt_fn_visit_type_%d_((void*)&inst->%s[i], visitor, ctx) != 0;\n", fnd->index, field->name);
+			printf("\t}\n");
+		}
+		else
+		{
+			printf("\tchanged_count += vt_fn_visit_type_%d_((void*)&inst->%s, visitor, ctx) != 0;\n", fnd->index, field->name);
+		}
+		return;
+	}
+	printf("\tif(visitor->visit_%s)\n\t{\n", data_types[dt_index].name);
+	
+	printf("\t\tchanged_count += visitor->visit_%s(ctx, %s, (%s*)&inst->%s%s, %d);\n", data_types[dt_index].name, field_name, data_types[dt_index].name, field->name, array_index_str, field->element_count);
+	printf("\t}\n\telse if(visitor->visit)\n\t{\n");
+	printf("\t\tchanged_count += visitor->visit(ctx, %s, (void*)&inst->%s%s, sizeof(%s), %d);\n", field_name, field->name, array_index_str, data_types[dt_index].name, field->element_count);
+	printf("\t}\n");
+}
+void write_visitor_entry(TypeEntry **entries, TypeEntry *it)
 {
 	if(entry_type_is_structure(it->entry_type))
 	{
@@ -509,29 +597,7 @@ void write_visitor_entry(TypeEntry *it)
 		printf("\t%s *inst = (%s*)data;\n\tint changed_count = 0;\n", it->name, it->name);
 		while(fields)
 		{
-			s32 dt_index = data_type_index_by_hash(fields->type_hash);
-			if(dt_index != -1 && fields->visibility != k_EVisibilityPrivate)
-			{
-				printf("\tif(visitor->visit_%s)\n\t{\n", data_types[dt_index].name);
-				
-				char field_name[256] = {0};
-				char array_index_str[4] = {0};
-				if(fields->visibility == k_EVisibilityProtected)
-				{
-					snprintf(field_name, sizeof(field_name), "NULL");
-				} else {
-					
-					snprintf(field_name, sizeof(field_name), "\"%s\"", fields->name);
-				}
-				if(fields->element_count > 1)
-				{
-					strcpy(array_index_str, "[0]");
-				}
-				printf("\t\tchanged_count += visitor->visit_%s(ctx, %s, (%s*)&inst->%s%s, %d);\n", data_types[dt_index].name, field_name, data_types[dt_index].name, fields->name, array_index_str, fields->element_count);
-				printf("\t}\n\telse if(visitor->visit)\n\t{\n");
-				printf("\t\tchanged_count += visitor->visit(ctx, %s, (void*)&inst->%s%s, sizeof(%s), %d);\n", field_name, fields->name, array_index_str, data_types[dt_index].name, fields->element_count);
-				printf("\t}\n");
-			}
+			write_visitor_entry_field(entries, fields);
 			fields = fields->next;
 		}
 		printf("\treturn changed_count;\n}\n\n");
@@ -723,7 +789,7 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 
 			while(it)
 			{
-				write_visitor_entry(it);
+				write_visitor_entry(&entries, it);
 				it = it->next;
 			}
 			write_vtable(entries);
