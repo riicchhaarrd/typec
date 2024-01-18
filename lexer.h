@@ -100,6 +100,12 @@ void lexer_stream_init_file(LexerStream *ls, FILE *fp)
 	ls->tell = lexer_stream_tell_file;
 }
 
+typedef enum
+{
+	k_ELexerFlagNone = 0,
+	k_ELexerFlagSkipComments = 1
+} k_ELexerFlags;
+
 typedef struct
 {
 	LexerStream *stream;
@@ -110,6 +116,7 @@ typedef struct
 //	u32 index;
 //	u32 size;
 	jmp_buf jmp_error;
+	int flags;
 } Lexer;
 #pragma pack(pop)
 
@@ -120,6 +127,7 @@ void lexer_init(Lexer *l, Arena *arena, LexerStream *stream)
 	//l->input_stream = s;
 	l->stream = stream;
 	l->arena = arena;
+	l->flags = k_ELexerFlagNone;
 	Token *t = new(arena, Token, 1);
 	{		
 		t->next = NULL;
@@ -367,6 +375,8 @@ repeat:
 				return 0;
 			}
 			lexer_read_characters(lexer, t, k_ETokenTypeComment, cond_single_line_comment);
+			if(lexer->flags & k_ELexerFlagSkipComments)
+				goto repeat;
 		} break;
 		default:
 		{

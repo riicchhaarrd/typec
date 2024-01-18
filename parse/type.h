@@ -729,6 +729,8 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 	LexerStream ls = { 0 };
 	lexer_stream_init_file(&ls, fp);
 	lexer_init(&lexer, arena, &ls);
+	
+	lexer.flags |= k_ELexerFlagSkipComments;
 
 	TypeEntry *entries;
 	parse_type(&lexer, &entries);
