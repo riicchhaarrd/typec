@@ -562,12 +562,12 @@ void write_visitor_entry_field(TypeEntry **entries, Field *field)
 		if(field->element_count > 1)
 		{
 			printf("\tfor(int i = 0; i < %d; ++i)\n\t{\n", field->element_count);
-			printf("\t\tchanged_count += vt_fn_visit_type_%d_((void*)&inst->%s[i], visitor, ctx) != 0;\n", fnd->index, field->name);
+			printf("\t\tchanged_count += vt_fn_visit_type_%d_((void*)&inst->%s[i], visitor, ctx, %s) != 0;\n", fnd->index, field->name, field_name);
 			printf("\t}\n");
 		}
 		else
 		{
-			printf("\tchanged_count += vt_fn_visit_type_%d_((void*)&inst->%s, visitor, ctx) != 0;\n", fnd->index, field->name);
+			printf("\tchanged_count += vt_fn_visit_type_%d_((void*)&inst->%s, visitor, ctx, %s) != 0;\n", fnd->index, field->name, field_name);
 		}
 		return;
 	}
@@ -593,7 +593,7 @@ void write_visitor_entry(TypeEntry **entries, TypeEntry *it)
 		printf("}\n\n");
 		fields = it->fields;
 		//printf("int vt_fn_visit_type_%d_(void *data, int (*visit_field)(void *ctx, const char *key, void *value, k_EPrimitiveType field_type), void *ctx)\n{\n", it->index);
-		printf("static int vt_fn_visit_type_%d_(void *data, TypeFieldVisitor *visitor, void *ctx)\n{\n", it->index);
+		printf("static int vt_fn_visit_type_%d_(void *data, TypeFieldVisitor *visitor, void *ctx, const char *field_name)\n{\n", it->index);
 		printf("\t%s *inst = (%s*)data;\n\tint changed_count = 0;\n", it->name, it->name);
 		while(fields)
 		{
@@ -607,7 +607,7 @@ void write_visitor_entry(TypeEntry **entries, TypeEntry *it)
 void write_vtable(TypeEntry *entries)
 {
 printf(R"(
-typedef int (*VisitFn)(void *instance, TypeFieldVisitor *visitor, void *ctx);
+typedef int (*VisitFn)(void *instance, TypeFieldVisitor *visitor, void *ctx, const char *field_name);
 typedef void (*InitializeFn)(void *instance);
 typedef struct
 {
@@ -642,14 +642,14 @@ static int visit(void *data, TypeFieldVisitor *visitor, void *ctx)
 	int32_t max_entries = sizeof(vtable_entries) / sizeof(vtable_entries[0]);
 	if(type_index < 0 || type_index >= max_entries)
 		return 0;
-	return vtable_entries[type_index].visit(data, visitor, ctx);
+	return vtable_entries[type_index].visit(data, visitor, ctx, NULL);
 }
 static int type_visit(void *data, TypeFieldVisitor *visitor, void *ctx, int32_t type_index)
 {
 	int32_t max_entries = sizeof(vtable_entries) / sizeof(vtable_entries[0]);
 	if(type_index < 0 || type_index >= max_entries)
 		return 0;
-	return vtable_entries[type_index].visit(data, visitor, ctx);
+	return vtable_entries[type_index].visit(data, visitor, ctx, NULL);
 }
 static size_t type_sizeof(int32_t type_index)
 {
