@@ -11,6 +11,8 @@
 // - For fixed size arrays, maybe encode them as variable length but add a check whether that amount of data is actually present when decoded.
 // - More agressive compression / packing for structs of type 'Message'
 // - More padding/alignment fixing for structs of type 'Component'
+// - Maybe a visit2/visit_general, that goes through each field but only visits general types like int, float, string and passes the number of bits, whether the type is signed or unsigned. (For now just map all specific visitors to a more general visitor in serialize.c)
+// - Maybe apply a Transformer/Operator type function in order or with flags to fields so before serializing when compression/encryption is enabled it's first passed through these functions.
 
 /*
 	struct Player
