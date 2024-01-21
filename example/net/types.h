@@ -9,32 +9,11 @@ typedef int16_t int8;
 typedef int16_t int16;
 typedef int32_t int32;
 typedef int64_t int64;
-typedef float float32;
-typedef double float64;
+typedef float vec4[4];
+typedef float vec3[3];
+typedef float vec2[2];
+typedef float quat[3];
+typedef float mat3[9];
+typedef float mat4[16];
 typedef char* string;
 typedef uint64_t hash;
-typedef struct
-{
-	float x, y, z;
-	int32_t padding; //aligned
-} vec3;
-typedef struct
-{
-	float x, y, z, w;
-} vec4;
-typedef struct
-{
-	float w, x, y, z;
-} quat;
-typedef struct
-{
-	float m[16];
-} mat4;
-typedef struct
-{
-	float m[9];
-} mat3;
-typedef struct
-{
-	float x, y;
-} vec2;
