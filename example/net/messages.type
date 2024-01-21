@@ -1,9 +1,11 @@
+extern int;
+
 public message MsgConnect
 {
 	public:
-		char name[32];
+		char name[32] %3 = "Test"; //%3 specifies the index of this field
 	protected:
-		int some_option;
+		int some_option %0 = 12345;
 	private:
 		int some_secret_key;
 };

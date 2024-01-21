@@ -19,9 +19,25 @@ int visit_(void *ctx, const char *key, void *value, size_t size, size_t num_elem
 	printf("%s = %02X\n", key ? key : "", value);
 	return 0;
 }
+int data_type_int_to_string(int *value, size_t num_elements, char *buf, size_t bufsz)
+{
+	return snprintf(buf, bufsz, "%d", *value);
+}
 
 int main()
 {
+	MsgConnect msg;
+	type_init(&msg, k_ETypeMsgConnect);
+	char tmp[32];
+	for(int i = 0; i < type_field_count(&msg); ++i)
+	{
+		ReflectionFieldTypeInfo info;
+		type_field_info(&msg, i, &info);
+		info.to_string(info.field, info.element_count, tmp, sizeof(tmp));
+		printf("%d: %s '%s'\n", i, info.name, tmp);
+	}
+	
+	return 0;
 	int client_socket;
 	struct sockaddr_in server_addr;
 	char buffer[MAX_BUFFER_SIZE];
