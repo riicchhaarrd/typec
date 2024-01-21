@@ -215,12 +215,12 @@ static DataType data_types[] = {
 		Just assume vecN is a 32-bit float.
 		Most of the time it's already promoted to a double anyways but for storing it to disk / network traffic bandwidth usually unnecessary.
 	*/
-	{"vec2", 0, k_EDataTypeFloat, 0, 2, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
-	{"vec3", 0, k_EDataTypeFloat, 0, 3, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
-	{"vec4", 0, k_EDataTypeFloat, 0, 4, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
-	{"quat", 0, k_EDataTypeFloat, 0, 3, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
-	{"mat3", 0, k_EDataTypeFloat, 0, 9, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
-	{"mat4", 0, k_EDataTypeFloat, 0, 16, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
+	//{"vec2", 0, k_EDataTypeFloat, 0, 2, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
+	//{"vec3", 0, k_EDataTypeFloat, 0, 3, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
+	//{"vec4", 0, k_EDataTypeFloat, 0, 4, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
+	//{"quat", 0, k_EDataTypeFloat, 0, 3, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
+	//{"mat3", 0, k_EDataTypeFloat, 0, 9, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
+	//{"mat4", 0, k_EDataTypeFloat, 0, 16, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
 	{"string", 0, k_EDataTypeString, 0, -1, data_type_string_serialize, data_type_string_deserialize, data_type_string_definition},
 	//{"hash", 0, k_EDataTypeUInt, 0, 1, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
 	{NULL, 0, 0, 0, 0, 0, 0, 0}
