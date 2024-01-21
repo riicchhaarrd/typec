@@ -708,7 +708,12 @@ void write_visitor_entry(TypeEntry **entries, ForwardedType **forwarded_types, T
 				if(fields->visibility != k_EVisibilityPrivate)
 				{
 					printf("\t\tcase %d:\n", field_index);
-					printf("\t\tinfo->name = \"%s\";\n", fields->name);
+					if(fields->visibility == k_EVisibilityProtected)
+					{
+						printf("\t\tinfo->name = NULL;\n");
+					} else {
+						printf("\t\tinfo->name = \"%s\";\n", fields->name);
+					}
 					printf("\t\tinfo->field = &inst->%s;\n", fields->name);
 					if(fields->data_type == k_EFieldDataTypeCustom)
 					{
