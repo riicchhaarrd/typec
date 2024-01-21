@@ -15,6 +15,10 @@
 // - Maybe apply a Transformer/Operator type function in order or with flags to fields so before serializing when compression/encryption is enabled it's first passed through these functions.
 // - Bitfields or specifying bit count for types, e.g int7, int3 maybe with options to pad up to the next byte for next fields.
 //   Variable length vs fixed bit fields might be tricky to implement, basically kinda like a buffer, char* again.
+// - Add metadata to fields like this:
+//   [Note("This is a note.")]
+//	 int32 max_value;
+//   Altough I'm not sure about how to apply it to multiple fields. Maybe use : like public, private and protected do but would be easy to miss and accidently apply metadata to a bunch of fields.
 /*
 	if(bit_count % 8 != 0 || bit_index % 8 != 0)
 		write_bitstream(...)
