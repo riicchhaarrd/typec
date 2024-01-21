@@ -718,6 +718,10 @@ void write_visitor_entry(TypeEntry **entries, ForwardedType **forwarded_types, T
 					if(fields->data_type == k_EFieldDataTypeCustom)
 					{
 						printf("\t\tinfo->data_type = k_EDataTypeCustom;\n");
+						printf("\t\tinfo->to_string = NULL;\n");
+					} else if(fields->data_type == k_EFieldDataTypeForward)
+					{
+						printf("\t\tinfo->to_string = (RTFI_ToStringFn)data_type_%s_to_string;\n", fields->type);
 					} else if(fields->data_type == k_EFieldDataTypePrimitive)
 					{
 						s32 dt_index = data_type_index_by_hash(fields->type_hash);
@@ -725,18 +729,20 @@ void write_visitor_entry(TypeEntry **entries, ForwardedType **forwarded_types, T
 						{
 							DataType *dt = &data_types[dt_index];
 							printf("\t\tinfo->data_type = (k_EDataType)%d;\n", dt->type);
+							printf("\t\tinfo->to_string = (RTFI_ToStringFn)data_type_%s_to_string;\n", fields->type);
 						} else 
 						{
 							printf("\t\tinfo->data_type = 0;\n");
+							printf("\t\tinfo->to_string = NULL;\n");
 						}
 					} else
 					{
 						printf("\t\tinfo->data_type = 0;\n");
+						printf("\t\tinfo->to_string = NULL;\n");
 					}
 					printf("\t\tinfo->bits = 8 * sizeof(%s);\n", fields->type);
 					printf("\t\tinfo->offset = offsetof(%s, %s);\n", it->name, fields->name);
 					printf("\t\tinfo->element_count = %d;\n", fields->element_count);
-					printf("\t\tinfo->to_string = (RTFI_ToStringFn)data_type_%s_to_string;\n", fields->type);
 					printf("\t\treturn true;\n\n");
 					++field_index;
 				}
