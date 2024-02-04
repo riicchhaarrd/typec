@@ -120,6 +120,44 @@ typedef struct
 } Lexer;
 #pragma pack(pop)
 
+u8 lexer_read_and_advance(Lexer *l)
+{
+	u8 buf = 0;
+	if(l->stream->read(l->stream->ctx, &buf, 1) != 1)
+		return 0;
+	return buf;
+	//if(l->index < 0 || l->index >= l->size)
+		//return 0;
+	//return l->input_stream[l->index++];
+}
+
+static int lexer_find_line_number(Lexer *lexer)
+{	
+	LexerStream *ls = lexer->stream;
+	s32 pos = ls->tell(ls->ctx);
+	if(pos < 0)
+		return -1;
+	
+	ls->seek(ls->ctx, 0);
+	int line_number = 0;
+	while(1)
+	{
+		if(ls->tell(ls->ctx) >= pos)
+			break;
+		u8 ch = lexer_read_and_advance(lexer);
+		if(!ch)
+		{
+			//Unexpected EOF
+			ls->seek(ls->ctx, pos);
+			return -1;
+		}
+		if(ch == '\n')
+			++line_number;
+	}
+	ls->seek(ls->ctx, pos);
+	return line_number;
+}
+
 void lexer_init(Lexer *l, Arena *arena, LexerStream *stream)
 {
 	//l->index = 0;
@@ -157,20 +195,10 @@ void lexer_token_read_string(Lexer *lexer, Token *t, char *temp, s32 max_temp_si
 	ls->seek(ls->ctx, pos);
 }
 
-u8 lexer_read_and_advance(Lexer *l)
-{
-	u8 buf = 0;
-	if(l->stream->read(l->stream->ctx, &buf, 1) != 1)
-		return 0;
-	return buf;
-	//if(l->index < 0 || l->index >= l->size)
-		//return 0;
-	//return l->input_stream[l->index++];
-}
-
 void lexer_error(Lexer *l, const char *message)
 {
-	printf("Lexer error: %s\n", message);
+	int line_number = lexer_find_line_number(l);
+	printf("Lexer error[%d]: %s\n", line_number, message);
 	longjmp(l->jmp_error, 1);
 }
 
