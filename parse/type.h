@@ -170,6 +170,9 @@ void write_field_definition(Field *field)
 	{
 		printf("\tsize_t num%s;\n", field->name);
 		printf("\t%s *%s", field->type, field->name);
+	} else if(field->element_count == -2)
+	{
+		printf("\t%s *%s", field->type, field->name);
 	} else {
 		printf("\t%s %s[%d]", field->type, field->name, field->element_count);
 	}
@@ -230,7 +233,7 @@ static DataType data_types[] = {
 	//{"quat", 0, k_EDataTypeFloat, 0, 3, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
 	//{"mat3", 0, k_EDataTypeFloat, 0, 9, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
 	//{"mat4", 0, k_EDataTypeFloat, 0, 16, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
-	{"string", 0, k_EDataTypeString, 0, -1, data_type_string_serialize, data_type_string_deserialize, data_type_string_definition},
+	//{"string", 0, k_EDataTypeString, 0, -1, data_type_string_serialize, data_type_string_deserialize, data_type_string_definition},
 	//{"hash", 0, k_EDataTypeUInt, 0, 1, data_type_primitive_serialize, data_type_primitive_deserialize, data_type_primitive_definition},
 	{NULL, 0, 0, 0, 0, 0, 0, 0}
 };
@@ -457,7 +460,17 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 										}
 										else
 										{
-											field->data_type = k_EFieldDataTypeCustom;
+											// Not sure if this is the right place to automatically coerce enum types to a primitive type.
+											// TODO: Get the max value of all entries of enum and choose best type to use e.g u8, u16, u32 or u64
+											if(fnd->entry_type == k_ETypeEntryTypeEnum || fnd->entry_type == k_ETypeEntryTypeFlags)
+											{
+												snprintf(field->type, sizeof(field->type), "uint32");
+												field->type_hash = fnv1a_64("uint32");
+											}
+											else
+											{
+												field->data_type = k_EFieldDataTypeCustom;
+											}
 										}
 									}
 								}
@@ -474,7 +487,11 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 									if(!lexer_accept(lexer, '?', NULL))
 									{
 										field->element_count = -1;
-									} else
+									} else if(!lexer_accept(lexer, '.', NULL) && !lexer_accept(lexer, '.', NULL) && !lexer_accept(lexer, '.', NULL))
+									{
+										field->element_count = -2;
+									}
+									else
 									{
 										Token num_of_elements_tk;
 										lexer_expect(lexer, k_ETokenTypeNumber, &num_of_elements_tk);
@@ -675,6 +692,13 @@ void write_visitor_entry_field(TypeEntry **entries, ForwardedType **forwarded_ty
 			printf("\tfor(size_t i = 0; i < inst->num%s; ++i)\n\t{\n", field->name);
 			printf("\t\tchanged_count += vt_fn_visit_type_%d_((void*)&inst->%s[i], visitor, ctx, %s) != 0;\n", fnd->index, field->name, field_name);
 			printf("\t}\n");
+		} else if(field->element_count == -2)
+		{
+			printf("\tsize_t num%s = 0;", field->name);
+			printf("\tvisitor->visit_field_count(ctx, %s, (void**)&inst->%s, sizeof(inst->%s[0]), &num%s);\n", field_name, field->name, field->name, field->name);
+			printf("\tfor(size_t i = 0; i < num%s; ++i)\n\t{\n", field->name);
+			printf("\t\tchanged_count += vt_fn_visit_type_%d_((void*)&inst->%s[i], visitor, ctx, %s) != 0;\n", fnd->index, field->name, field_name);
+			printf("\t}\n");
 		}
 		else
 		{
@@ -685,6 +709,10 @@ void write_visitor_entry_field(TypeEntry **entries, ForwardedType **forwarded_ty
 	if(field->element_count == -1)
 	{
 		printf("\t\tvisitor->visit_field_count(ctx, %s, (void**)&inst->%s, sizeof(inst->%s[0]), &inst->num%s);\n", field_name, field->name, field->name, field->name);
+	} else if(field->element_count == -2)
+	{
+		printf("\tsize_t num%s = 0;", field->name);
+		printf("\t\tvisitor->visit_field_count(ctx, %s, (void**)&inst->%s, sizeof(inst->%s[0]), &num%s);\n", field_name, field->name, field->name, field->name);
 	}
 	printf("\tif(visitor->visit_%s)\n\t{\n", field->type);
 	if(field->element_count == -1)
@@ -692,6 +720,12 @@ void write_visitor_entry_field(TypeEntry **entries, ForwardedType **forwarded_ty
 		printf("\t\treturn visitor->visit_%s(ctx, %s, (%s*)&inst->%s%s, inst->num%s);\n", field->type, field_name, field->type, field->name, array_index_str, field->name);
 		printf("\t}\n\telse if(visitor->visit)\n\t{\n");
 		printf("\t\treturn visitor->visit(ctx, %s, (void*)&inst->%s%s, sizeof(%s), inst->num%s);\n", field_name, field->name, array_index_str, field->type, field->name);
+		printf("\t}\n");
+	} else if(field->element_count == -2)
+	{
+		printf("\t\treturn visitor->visit_%s(ctx, %s, (%s*)&inst->%s%s, num%s);\n", field->type, field_name, field->type, field->name, array_index_str, field->name);
+		printf("\t}\n\telse if(visitor->visit)\n\t{\n");
+		printf("\t\treturn visitor->visit(ctx, %s, (void*)&inst->%s%s, sizeof(%s), num%s);\n", field_name, field->name, array_index_str, field->type, field->name);
 		printf("\t}\n");
 	} else 
 	{
@@ -707,7 +741,7 @@ void write_visitor_entry(TypeEntry **entries, ForwardedType **forwarded_types, T
 	{
 		Field *fields;
 		fields = it->fields;
-		printf("static void vt_fn_initialize_type_%d_(void *data)\n{\n", it->index);
+		printf("static void %s_init(void *data)\n{\n", it->name);
 		printf("\t%s *inst = (%s*)data;\n", it->name, it->name);
 		if(it->visibility != k_EVisibilityPrivate)
 		{
@@ -720,7 +754,7 @@ void write_visitor_entry(TypeEntry **entries, ForwardedType **forwarded_types, T
 				TypeEntry *fnd = type_entry_by_name(entries, fields->type);
 				if(fnd && fnd->visibility != k_EVisibilityPrivate) // If the type visibility is set to private, we can't infer the type because it doesn't have a type_ field.
 				{
-					printf("\tvt_fn_initialize_type_%d_(&inst->%s);\n", fnd->index, fields->name);
+					printf("\t%s_init(&inst->%s);\n", fnd->name, fields->name);
 				}
 			} else
 			{
@@ -789,6 +823,10 @@ void write_visitor_entry(TypeEntry **entries, ForwardedType **forwarded_types, T
 					if(fields->element_count == -1)
 					{
 						printf("\t\tinfo->element_count = inst->num%s;\n", fields->name);
+					} else if(fields->element_count == -2)
+					{
+						// TODO: FIXME we can't know the size if it's indicated by a EOF token without knowing what to call to get the length
+						printf("\t\tinfo->element_count = -1;\n");
 					} else {
 						printf("\t\tinfo->element_count = %d;\n", fields->element_count);
 					}
@@ -874,17 +912,20 @@ typedef struct
 	printf("static const VTableEntry vtable_entries[] = {\n");
 	while(entries)
 	{
-		if(entry_type_is_structure(entries->entry_type) && entries->visibility != k_EVisibilityPrivate)
+		if(entry_type_is_structure(entries->entry_type))// && entries->visibility != k_EVisibilityPrivate)
 		{
-			if(entries->visibility == k_EVisibilityProtected)
+			if(entries->visibility == k_EVisibilityPrivate)
 			{
-				printf("\t{NULL, (VisitFn)vt_fn_visit_type_%d_, (InitializeFn)vt_fn_initialize_type_%d_, sizeof(%s), %zu, (FieldInfoFn)vt_fn_field_info_type_%d_},\n", entries->index, entries->index, entries->name, type_entry_field_count(entries), entries->index);
+				printf("\t{NULL, (VisitFn)vt_fn_visit_type_%d_, (InitializeFn)%s_init, 0, 0, 0},\n", entries->index, entries->name);				
+			} else if(entries->visibility == k_EVisibilityProtected)
+			{
+				printf("\t{NULL, (VisitFn)vt_fn_visit_type_%d_, (InitializeFn)%s_init, sizeof(%s), %zu, (FieldInfoFn)vt_fn_field_info_type_%d_},\n", entries->index, entries->name, entries->name, type_entry_field_count(entries), entries->index);
 			} else {
-				printf("\t{\"%s\", (VisitFn)vt_fn_visit_type_%d_, (InitializeFn)vt_fn_initialize_type_%d_, sizeof(%s), %zu, (FieldInfoFn)vt_fn_field_info_type_%d_},\n", entries->name, entries->index, entries->index, entries->name, type_entry_field_count(entries), entries->index);
+				printf("\t{\"%s\", (VisitFn)vt_fn_visit_type_%d_, (InitializeFn)%s_init, sizeof(%s), %zu, (FieldInfoFn)vt_fn_field_info_type_%d_},\n", entries->name, entries->index, entries->name, entries->name, type_entry_field_count(entries), entries->index);
 			}
-		} else {
+		}/* else {
 			printf("\t{0, 0, 0, 0, 0, 0},\n");
-		}
+		}*/
 		entries = entries->next;
 	}
 	printf("\t{0, 0, 0, 0, 0, 0}\n};\n");
@@ -1040,13 +1081,10 @@ typedef int64_t int64;
 			printf("typedef enum\n{\n");
 			while(it)
 			{
-				if(it->visibility != k_EVisibilityPrivate)
-				{
-					printf("\tk_EType%s = %d,\n", it->name, it->index);
-				}
+				printf("\tk_EType%s = %d,\n", it->name, it->index);
 				it = it->next;
 			}
-			printf("} k_EType;\n\n");
+			printf("} k_EType;\n\n"); //TODO: Append header filename to prevent collision between multiple header files.
 		}
 		
 		printf("#ifdef TYPE_IMPLEMENTATION\n\n");
