@@ -1148,6 +1148,7 @@ typedef struct
 				printf("\n");
 			}
 		}
+/*
 printf(R"(
 //TODO: write more than 1 field element to string
 /*
@@ -1175,9 +1176,9 @@ static int data_type_to_string(void *value, size_t num_elements, char *buf, size
 		}
 	}
 	return offset;
-}
-*/	
+}	
 )");
+*/
 		{
 			// https://stackoverflow.com/questions/7899119/what-does-s-mean-in-printf
 			// It should be noted that the str_len argument must have type int (or narrower integral type, which would be promoted to int). It would be a bug to pass long, size_t.
