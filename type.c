@@ -18,7 +18,7 @@ void error(const char *fmt)
 int main(int argc, const char **argv, char **envp)
 {
 	Arena scratch = { 0 };
-	char temp[16000]; //16KB
+	char temp[160000]; //160KB
 	size_t bytes = sizeof(temp);
 	
 	//size_t bytes = 64000000; // 64MB
