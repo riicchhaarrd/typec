@@ -1,6 +1,8 @@
 #ifndef PARSE_TYPE_H
 #define PARSE_TYPE_H
 #include <stdbool.h>
+#include "../stream_file.h"
+#include "../stream_buffer.h"
 
 // TODO
 // - When encoding do the same as protobuf and have a key/index for each field first that maps to the location of the field in the file. With a small value indicating what type it is, e.g variable length/varint for future compatibility.
@@ -66,7 +68,6 @@ typedef struct Field_s
 	struct Field_s *next;
 	s32 element_count; //e.g vec3 has 3 elements, default 1, -1 variable length
 	char *initial_value;
-	int initial_value_token_type;
 } Field;
 
 typedef enum
@@ -340,11 +341,11 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 			default:
 				lexer_error(lexer, "Expected identifier");
 			break;
-			case k_ETokenTypeIdentifier:
+			case TOKEN_TYPE_IDENTIFIER:
 			{
 				if(t.hash == id_extern)
 				{
-					lexer_expect(lexer, k_ETokenTypeIdentifier, &t);
+					lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &t);
 					// TODO: Fix types that have more than 1 identifier like 'unsigned int'.
 					// I would have to fix some other code to convert whitespace to underscores and I don't wanna deal with it right now though.
 					char fwd_name[64];
@@ -381,13 +382,13 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 						{
 							entry->visibility = k_EVisibilityProtected;
 						}
-						lexer_expect(lexer, k_ETokenTypeIdentifier, &t);
+						lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &t);
 					}
 					k_EVisibility field_visibility = k_EVisibilityPrivate;
 					s32 field_index = 0;
 					u64 id_hash = t.hash;
 					Token name;
-					lexer_expect(lexer, k_ETokenTypeIdentifier, &name);
+					lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &name);
 					lexer_expect(lexer, '{', NULL);
 					lexer_token_read_string(lexer, &name, entry->name, sizeof(entry->name));
 					//printf("%s\n", temp);
@@ -411,7 +412,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 								break;
 
 							Token field_type, field_name;
-							lexer_expect(lexer, k_ETokenTypeIdentifier, &field_type);
+							lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &field_type);
 							if(field_type.hash == id_replicated)
 							{
 								replicated = 1;
@@ -431,7 +432,6 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 							} else {
 								Field *field = new(lexer->arena, Field, 1);
 								field->initial_value = NULL;
-								field->initial_value_token_type = 0;
 								lexer_token_read_string(lexer, &field_type, field->type, sizeof(field->type));
 								field->next = NULL;
 								field->data_type = k_EFieldDataTypePrimitive;
@@ -456,6 +456,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 												printf("%s, ", data_types[k].name);
 											}
 											printf("\n");
+											printf("Field type: %s\n", field->type);
 											lexer_error(lexer, "Field type must be one of the following above or a user-defined type.");
 										}
 										else
@@ -474,7 +475,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 										}
 									}
 								}
-								lexer_expect(lexer, k_ETokenTypeIdentifier, &field_name);
+								lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &field_name);
 								field->name_hash = field_name.hash;
 								//printf("field_type: %s\n", field->type);
 								lexer_token_read_string(lexer, &field_name, field->name, sizeof(field->name));
@@ -494,7 +495,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 									else
 									{
 										Token num_of_elements_tk;
-										lexer_expect(lexer, k_ETokenTypeNumber, &num_of_elements_tk);
+										lexer_expect(lexer, TOKEN_TYPE_NUMBER, &num_of_elements_tk);
 										lexer_token_read_string(lexer, &num_of_elements_tk, index_str, sizeof(index_str));
 										field->element_count = atoi(index_str);
 									}
@@ -504,25 +505,39 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 								if(!lexer_accept(lexer, '@', NULL))
 								{
 									Token keyword;
-									lexer_expect(lexer, k_ETokenTypeIdentifier, &keyword);
+									lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &keyword);
 									lexer_token_read_string(lexer, &keyword, field->metadata, sizeof(field->metadata));
 								}
 								if(!lexer_accept(lexer, '%', NULL))
 								{
 									Token index_token;
-									lexer_expect(lexer, k_ETokenTypeNumber, &index_token);
+									lexer_expect(lexer, TOKEN_TYPE_NUMBER, &index_token);
 									lexer_token_read_string(lexer, &index_token, index_str, sizeof(index_str));
 									field_index = field->index = atoi(index_str);
 								}
 								if(!lexer_accept(lexer, '=', NULL))
 								{
-									Token initial_value;
-									lexer_step(lexer, &initial_value);
-									char* initial_value_str = new(lexer->arena, char, initial_value.length + 1);
-									// lexer_token_read_string should really return N of characters written and if it failed or not.
-									lexer_token_read_string(lexer, &initial_value, initial_value_str, initial_value.length + 1);
-									field->initial_value_token_type = initial_value.token_type;
-									field->initial_value = initial_value_str;
+									Stream *ls = lexer->stream;
+									s64 pos = ls->tell(ls);
+									// Read till EOL
+									while(1)
+									{
+										if(!lexer_accept(lexer, ';', NULL))
+										{
+											lexer_unget(lexer);
+											break;
+										}
+										Token _;
+										lexer_step(lexer, &_);
+									}
+									s64 nchars = ls->tell(ls) - pos;
+									ls->seek(ls, pos, SEEK_SET);
+									char* initial_value = new(lexer->arena, char, nchars + 1);
+
+									ls->read(ls, initial_value, 1, nchars);
+									initial_value[nchars] = 0;
+
+									field->initial_value = initial_value;
 								}
 								
 								if(!fields)
@@ -545,7 +560,6 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 								break;
 							Field *field = new(lexer->arena, Field, 1);
 							field->initial_value = NULL;
-							field->initial_value_token_type = 0;
 							field->data_type = k_EFieldDataTypePrimitive;
 							field->next = NULL;
 							field->index = -1;
@@ -554,7 +568,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 							field->replicated = replicated;
 							field->type[0] = 0;
 							Token enum_value;
-							lexer_expect(lexer, k_ETokenTypeIdentifier, &enum_value);
+							lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &enum_value);
 							lexer_token_read_string(lexer, &enum_value, field->name, sizeof(field->name));
 							//printf("enum value: %s\n", temp);
 							
@@ -735,7 +749,7 @@ void write_visitor_entry_field(TypeEntry **entries, ForwardedType **forwarded_ty
 		printf("\t}\n");
 	}
 }
-void write_visitor_entry(TypeEntry **entries, ForwardedType **forwarded_types, TypeEntry *it)
+void write_visitor_entry(Arena *arena, TypeEntry **entries, ForwardedType **forwarded_types, TypeEntry *it)
 {
 	if(entry_type_is_structure(it->entry_type))
 	{
@@ -759,14 +773,39 @@ void write_visitor_entry(TypeEntry **entries, ForwardedType **forwarded_types, T
 			} else
 			{
 				// TODO: Add check whether initial value can be copied to the type of this field.
+				
 				if(fields->initial_value)
 				{
-					if(fields->initial_value_token_type == k_ETokenTypeString)
+					Stream s = {0};
+					StreamBuffer sb = {0};
+					init_stream_from_buffer(&s, &sb, fields->initial_value, strlen(fields->initial_value) + 1);
+
+					Lexer l = { 0 };
+					lexer_init(&l, arena, &s);
+					l.flags |= k_ELexerFlagSkipComments;
+					
+					Token _;
+					if(!lexer_accept(&l, '{', &_) || !lexer_accept(&l, '[', &_))
 					{
-						printf("\tsnprintf(inst->%s, sizeof(inst->%s), \"%s\");\n", fields->name, fields->name, fields->initial_value);
-					} else {
+						// List of values
+						int c = 0;
+						do
+						{
+							lexer_step(&l, &_);
+							char str[256];
+							str[0] = 0;
+							lexer_token_read_string(&l, &_, str, sizeof(str));
+							printf("\tinstr->%s[%d] = %s;\n", fields->name, c++, str);
+						} while (!lexer_accept(&l, ',', NULL));
+						
+					} else if(!lexer_accept(&l, '"', &_))
+					{
+						// String
+						printf("\tsnprintf(inst->%s, sizeof(inst->%s),%s);\n", fields->name, fields->name, fields->initial_value);
+					} else
+					{
 						// TODO: Lexer doesn't support hexadecimal values at the moment.
-						printf("\tinst->%s = %s;\n", fields->name, fields->initial_value);
+						printf("\tinst->%s =%s;\n", fields->name, fields->initial_value);
 					}
 				}
 			}
@@ -1033,15 +1072,11 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 	ForwardedType *forwarded_types = NULL;
 	
 	initialize_data_type_hashes();
-	
-	FILE *fp = fopen(path, "rb");
-	if(!fp)
-		return;
 
 	Lexer lexer = { 0 };
 
-	LexerStream ls = { 0 };
-	lexer_stream_init_file(&ls, fp);
+	Stream ls = { 0 };
+	stream_open_file(&ls, path, "rb");
 	lexer_init(&lexer, arena, &ls);
 	
 	lexer.flags |= k_ELexerFlagSkipComments;
@@ -1261,7 +1296,7 @@ static int data_type_to_string(void *value, size_t num_elements, char *buf, size
 
 			while(it)
 			{
-				write_visitor_entry(&entries, &forwarded_types, it);
+				write_visitor_entry(arena, &entries, &forwarded_types, it);
 				it = it->next;
 			}
 			write_vtable(entries);
@@ -1270,6 +1305,6 @@ static int data_type_to_string(void *value, size_t num_elements, char *buf, size
 	} else {
 		printf("Unsupported mode '%s'\n", opts->mode);
 	}
-	fclose(fp);
+	stream_close_file(&ls);
 }
 #endif

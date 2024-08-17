@@ -1,6 +1,10 @@
 #ifndef PARSE_H
 #define PARSE_H
+#include "stream.h"
+
 #include "types.h"
+
+#define LEXER_STATIC static
 
 #define MAX_TOKEN_STRING_LENGTH (64)
 
@@ -14,16 +18,16 @@
 typedef enum
 {
 	//ASCII table ...
-	k_ETokenTypeIdentifier = 256,
-	k_ETokenTypeString,
-	k_ETokenTypeNumber,
-	k_ETokenTypeComment,
-	k_ETokenTypeMax
-} k_ETokenType;
+	TOKEN_TYPE_IDENTIFIER = 256,
+	TOKEN_TYPE_STRING,
+	TOKEN_TYPE_NUMBER,
+	TOKEN_TYPE_COMMENT,
+	TOKEN_TYPE_MAX
+} TokenType;
 
-static const char *token_type_to_string(k_ETokenType token_type, char *string_out, int string_out_size)
+LEXER_STATIC const char *token_type_to_string(TokenType token_type, char *string_out, int string_out_size)
 {
-	if(token_type >= k_ETokenTypeMax)
+	if(token_type >= TOKEN_TYPE_MAX)
 		return "?";
 	if(string_out_size < 2)
 		return "?";
@@ -43,7 +47,7 @@ static const char *token_type_to_string(k_ETokenType token_type, char *string_ou
 typedef struct Token_s
 {
 	struct Token_s *next;
-	u32 position;
+	s64 position;
 	u16 token_type;
 	u64 hash;
 	#if 0
@@ -57,58 +61,17 @@ typedef struct Token_s
 	u16 length;
 } Token;
 
-typedef struct
-{
-	void *ctx;
-	//int (*eof)(LexerStream*);
-	int (*read)(void*, u8*, s32);
-	int (*seek)(void*, s32);
-	s32 (*tell)(void*);
-	//StreamError? longjmp
-} LexerStream;
-
-// TODO: use a stream block altough I wrote a quick implementation and it seemed slower
-typedef struct
-{
-	FILE *fp;
-	s32 index;
-	int cached;
-	char data[2048];
-} StreamBlock;
-
-int lexer_stream_read_file(void *ctx, u8 *b, s32 n)
-{
-	FILE *fp = ctx;
-	return fread(b, n, 1, fp);
-}
-int lexer_stream_seek_file(void *ctx, s32 n)
-{
-	FILE *fp = ctx;
-	return fseek(fp, n, SEEK_SET);
-}
-s32 lexer_stream_tell_file(void *ctx)
-{
-	FILE *fp = ctx;
-	return ftell(fp);
-}
-
-void lexer_stream_init_file(LexerStream *ls, FILE *fp)
-{
-	ls->ctx = fp;
-	ls->read = lexer_stream_read_file;
-	ls->seek = lexer_stream_seek_file;
-	ls->tell = lexer_stream_tell_file;
-}
-
 typedef enum
 {
 	k_ELexerFlagNone = 0,
-	k_ELexerFlagSkipComments = 1
+	k_ELexerFlagSkipComments = 1,
+	k_ELexerFlagTokenizeNewlines = 2,
+	k_ELexerFlagIdentifierIncludesHyphen = 4
 } k_ELexerFlags;
 
 typedef struct
 {
-	LexerStream *stream;
+	Stream *stream;
 //	const char *input_stream;
 	Token *tokens;
 	Token *tokens_end;
@@ -119,46 +82,9 @@ typedef struct
 	int flags;
 } Lexer;
 #pragma pack(pop)
+LEXER_STATIC int lexer_step(Lexer *lexer, Token *t);
 
-u8 lexer_read_and_advance(Lexer *l)
-{
-	u8 buf = 0;
-	if(l->stream->read(l->stream->ctx, &buf, 1) != 1)
-		return 0;
-	return buf;
-	//if(l->index < 0 || l->index >= l->size)
-		//return 0;
-	//return l->input_stream[l->index++];
-}
-
-static int lexer_find_line_number(Lexer *lexer)
-{	
-	LexerStream *ls = lexer->stream;
-	s32 pos = ls->tell(ls->ctx);
-	if(pos < 0)
-		return -1;
-	
-	ls->seek(ls->ctx, 0);
-	int line_number = 0;
-	while(1)
-	{
-		if(ls->tell(ls->ctx) >= pos)
-			break;
-		u8 ch = lexer_read_and_advance(lexer);
-		if(!ch)
-		{
-			//Unexpected EOF
-			ls->seek(ls->ctx, pos);
-			return -1;
-		}
-		if(ch == '\n')
-			++line_number;
-	}
-	ls->seek(ls->ctx, pos);
-	return line_number;
-}
-
-void lexer_init(Lexer *l, Arena *arena, LexerStream *stream)
+LEXER_STATIC void lexer_init(Lexer *l, Arena *arena, Stream *stream)
 {
 	//l->index = 0;
 	//l->size = strlen(s);
@@ -176,45 +102,57 @@ void lexer_init(Lexer *l, Arena *arena, LexerStream *stream)
 	}
 	l->tokens = t;
 	l->tokens_end = l->tokens;
+	#if 0
 	if(setjmp(l->jmp_error))
 	{
 		exit(1);
 	}
+	#endif
 }
 
-void lexer_token_read_string(Lexer *lexer, Token *t, char *temp, s32 max_temp_size)
+LEXER_STATIC void lexer_token_read_string(Lexer *lexer, Token *t, char *temp, s32 max_temp_size)
 {
-	LexerStream *ls = lexer->stream;
-	s32 pos = ls->tell(ls->ctx);
-	ls->seek(ls->ctx, t->position);
+	Stream *ls = lexer->stream;
+	s32 pos = ls->tell(ls);
+	ls->seek(ls, t->position, SEEK_SET);
 	s32 n = max_temp_size - 1;
 	if(t->length < n)
 		n = t->length;
-	ls->read(ls->ctx, temp, n);
+	ls->read(ls, temp, 1, n);
 	temp[n] = 0;
-	ls->seek(ls->ctx, pos);
+	ls->seek(ls, pos, SEEK_SET);
 }
 
-void lexer_error(Lexer *l, const char *message)
+LEXER_STATIC u8 lexer_read_and_advance(Lexer *l)
 {
-	int line_number = lexer_find_line_number(l);
-	printf("Lexer error[%d]: %s\n", line_number, message);
+	u8 buf = 0;
+	if(l->stream->read(l->stream, &buf, 1, 1) != 1)
+		return 0;
+	return buf;
+	//if(l->index < 0 || l->index >= l->size)
+		//return 0;
+	//return l->input_stream[l->index++];
+}
+
+LEXER_STATIC void lexer_error(Lexer *l, const char *message)
+{
+	printf("Lexer error: %s\n", message);
 	longjmp(l->jmp_error, 1);
 }
 
-void lexer_unget(Lexer *l)
+LEXER_STATIC void lexer_unget(Lexer *l)
 {
-	s32 current = l->stream->tell(l->stream->ctx);
+	int64_t current = l->stream->tell(l->stream);
 	if(current == 0)
 		return;
-	l->stream->seek(l->stream->ctx, current - 1);
+	l->stream->seek(l->stream, current - 1, SEEK_SET);
 //	l->index--;
 //	if(l->index < 0)
 //		l->index = 0;
 }
 
 
-Token* lexer_read_string(Lexer *lexer, Token *t)
+LEXER_STATIC Token* lexer_read_string(Lexer *lexer, Token *t)
 {
 	// https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
 	u64 prime = 0x00000100000001B3;
@@ -222,9 +160,9 @@ Token* lexer_read_string(Lexer *lexer, Token *t)
 
 	u64 hash = offset;
 
-	t->token_type = k_ETokenTypeString;
+	t->token_type = TOKEN_TYPE_STRING;
 	//t->position = lexer->index;
-	t->position = lexer->stream->tell(lexer->stream->ctx);
+	t->position = lexer->stream->tell(lexer->stream);
 	int n = 0;
 	int escaped = 0;
 	while(1)
@@ -252,7 +190,7 @@ Token* lexer_read_string(Lexer *lexer, Token *t)
 	return t;
 }
 
-Token* lexer_read_characters(Lexer *lexer, Token *t, k_ETokenType token_type, int (*cond)(u8 ch, int* undo))
+LEXER_STATIC Token* lexer_read_characters(Lexer *lexer, Token *t, TokenType token_type, int (*cond)(u8 ch, int* undo))
 {
 	// https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
 	u64 prime = 0x00000100000001B3;
@@ -262,7 +200,7 @@ Token* lexer_read_characters(Lexer *lexer, Token *t, k_ETokenType token_type, in
 
 	t->token_type = token_type;
 	//t->position = lexer->index;
-	t->position = lexer->stream->tell(lexer->stream->ctx);
+	t->position = lexer->stream->tell(lexer->stream);
 	int n = 0;
 	while(1)
 	{
@@ -295,29 +233,29 @@ Token* lexer_read_characters(Lexer *lexer, Token *t, k_ETokenType token_type, in
 	return t;
 }
 
-int cond_string(u8 ch, int *undo)
+LEXER_STATIC int cond_string(u8 ch, int *undo)
 {
 	*undo = 0;
 	return ch == '"';
 }
-int cond_numeric(u8 ch, int *undo)
+LEXER_STATIC int cond_numeric(u8 ch, int *undo)
 {
 	*undo = 1;
-	return !(ch >= '0' && ch <= '9') && ch != '.' && ch != 'e';
+	return !(ch >= '0' && ch <= '9') && ch != '.' && ch != 'e' && ch != 'f';
 }
-int cond_ident(u8 ch, int *undo)
+LEXER_STATIC int cond_ident(u8 ch, int *undo)
 {
 	*undo = 1;
 	return !(ch >= 'a' && ch <= 'z') && !(ch >= 'A' && ch <= 'Z') && ch != '_' && !(ch >= '0' && ch <= '9');
 }
-int cond_single_line_comment(u8 ch, int *undo)
+LEXER_STATIC int cond_single_line_comment(u8 ch, int *undo)
 {
 	*undo = 1;
 	//\0 is implicitly handled by the if(!ch) check in lexer_read_characters
 	return ch == '\r' || ch == '\n';
 }
 
-void lexer_push_token(Lexer *lexer, Token *t)
+LEXER_STATIC void lexer_push_token(Lexer *lexer, Token *t)
 {
 	Token **list_end = &lexer->tokens_end;
 	if(list_end)
@@ -327,12 +265,12 @@ void lexer_push_token(Lexer *lexer, Token *t)
 	}
 }
 
-int lexer_accept(Lexer *lexer, k_ETokenType tt, Token *t)
+LEXER_STATIC int lexer_accept(Lexer *lexer, TokenType tt, Token *t)
 {
 	Token _;
 	if(!t)
 		t = &_;
-	s32 pos = lexer->stream->tell(lexer->stream->ctx);
+	s64 pos = lexer->stream->tell(lexer->stream);
 	if(lexer_step(lexer, t))
 	{
 		// Unexpected EOF
@@ -341,13 +279,13 @@ int lexer_accept(Lexer *lexer, k_ETokenType tt, Token *t)
 	if(tt != t->token_type)
 	{
 		// Undo
-		lexer->stream->seek(lexer->stream->ctx, pos);
+		lexer->stream->seek(lexer->stream, pos, SEEK_SET);
 		return 1;
 	}
 	return 0;
 }
 
-void lexer_expect(Lexer *lexer, k_ETokenType tt, Token *t)
+LEXER_STATIC void lexer_expect(Lexer *lexer, TokenType tt, Token *t)
 {
 	Token _;
 	if(!t)
@@ -365,16 +303,16 @@ void lexer_expect(Lexer *lexer, k_ETokenType tt, Token *t)
 	}
 }
 
-int lexer_step(Lexer *lexer, Token *t)
+LEXER_STATIC int lexer_step(Lexer *lexer, Token *t)
 {
-	s32 index;
+	int64_t index;
 	
 	t->next = NULL;
 	t->length = 1;
 
 	u8 ch = 0;
 repeat:
-	index = lexer->stream->tell(lexer->stream->ctx);
+	index = lexer->stream->tell(lexer->stream);
 	t->position = index;
 	
 	ch = lexer_read_and_advance(lexer);
@@ -388,10 +326,12 @@ repeat:
 			lexer_read_string(lexer, t);
 		break;
 		
+		case '\n':
+		if(lexer->flags & k_ELexerFlagTokenizeNewlines)
+			return 0;
 		case '\t':
 		case ' ':
 		case '\r':
-		case '\n':
 			goto repeat;
 		case '/':
 		{
@@ -402,7 +342,7 @@ repeat:
 				lexer_unget(lexer); // We'll get \0 the next time we call lexer_step
 				return 0;
 			}
-			lexer_read_characters(lexer, t, k_ETokenTypeComment, cond_single_line_comment);
+			lexer_read_characters(lexer, t, TOKEN_TYPE_COMMENT, cond_single_line_comment);
 			if(lexer->flags & k_ELexerFlagSkipComments)
 				goto repeat;
 		} break;
@@ -411,11 +351,11 @@ repeat:
 			if(ch >= '0' && ch <= '9')
 			{
 				lexer_unget(lexer);
-				lexer_read_characters(lexer, t, k_ETokenTypeNumber, cond_numeric);
+				lexer_read_characters(lexer, t, TOKEN_TYPE_NUMBER, cond_numeric);
 			} else if((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_')
 			{
 				lexer_unget(lexer);
-				lexer_read_characters(lexer, t, k_ETokenTypeIdentifier, cond_ident);
+				lexer_read_characters(lexer, t, TOKEN_TYPE_IDENTIFIER, cond_ident);
 			} else
 			{
 				//if(ch >= 0x20 && ch <= 0x7e)
@@ -430,7 +370,7 @@ repeat:
 	return 0;
 }
 
-Token *lexer_parse(Lexer *lexer)
+LEXER_STATIC Token *lexer_parse(Lexer *lexer)
 {
 	while(1)
 	{
