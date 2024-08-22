@@ -5,6 +5,7 @@ typedef struct
 {
 	const char *mode;
 	const char *output;
+	const char *prefix;
 } CompilerOptions;
 
 #endif
