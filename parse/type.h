@@ -42,6 +42,8 @@
 	}
 */
 
+// Enable generic visitor to build absolute key path and fix keys for arrays
+
 typedef enum
 {
 	k_EVisibilityPrivate,
@@ -148,6 +150,22 @@ typedef struct ForwardedType_s
 	char name[64];
 	struct ForwardedType_s *next;
 } ForwardedType;
+
+#define ITERATE_LIST(type, head, iterator) \
+    for (type* iterator = head; iterator != NULL; iterator = iterator->next)
+
+static size_t entry_visit_count(TypeEntry *entry)
+{
+	size_t n = 0;
+	ITERATE_LIST(Field, entry->fields, it)
+	{
+		if(it->visibility != k_EVisibilityPrivate)
+		{
+			++n;
+		}
+	}
+	return n;
+}
 
 void data_type_string_definition(struct DataType_s *dt, TypeEntry *entry, Field *field)
 {
@@ -683,7 +701,6 @@ void write_visitor_entry_field(TypeEntry **entries, ForwardedType **forwarded_ty
 	if(field->visibility == k_EVisibilityPrivate)
 		return;
 	char field_name[256] = {0};
-	char array_index_str[4] = {0};
 	if(field->visibility == k_EVisibilityProtected)
 	{
 		snprintf(field_name, sizeof(field_name), "NULL");
@@ -691,60 +708,36 @@ void write_visitor_entry_field(TypeEntry **entries, ForwardedType **forwarded_ty
 		
 		snprintf(field_name, sizeof(field_name), "\"%s\"", field->name);
 	}
+	if(field->element_count > 1 || field->element_count == -2)
+	{
+		printf("\tif(visitor->pre_visit(visitor, %s, 0x%x, (void**)&inst->%s, &n, sizeof(inst->%s[0])))\n\t{\n", field_name, field->name_hash, field->name, field->name);
+	} else if(field->element_count == -1)
+	{
+		printf("\tif(visitor->pre_visit(visitor, %s, 0x%x, (void**)&inst->%s, &inst->num%s, sizeof(inst->%s[0])))\n\t{\n", field_name, field->name_hash, field->name, field->name, field->name);
+	}
+	else
+	{
+		printf("\tif(visitor->pre_visit(visitor, %s, 0x%x, NULL, NULL, sizeof(inst->%s)))\n\t{\n", field_name, field->name_hash, field->name);
+	}
 	if(field->element_count > 1)
 	{
-		strcpy(array_index_str, "[0]");
+		printf("\t\tchanged_count += visitor->visit_%s(visitor, %s, (%s*)&inst->%s[0], %d, sizeof(inst->%s[0]));\n", field->type, field_name, field->type, field->name, field->element_count, field->name);
 	}
-	s32 dt_index = data_type_index_by_hash(field->type_hash);
-	bool is_fwd = is_forwarded_type(forwarded_types, field->type);
-	// if(dt_index == -1 && !is_fwd)
-	if(dt_index == -1 && !is_fwd)
+	else if(field->element_count == -1)
 	{
-		TypeEntry *fnd = type_entry_by_name(entries, field->type);
-		if(!fnd)
-		{
-			printf("#error \"Can't find type '%s'\"\n", field->type);
-			return;
-		}
-		if(field->element_count > 1)
-		{
-			printf("\tfor(int i = 0; i < %d; ++i)\n\t{\n", field->element_count);
-			printf("\t\tchanged_count += visitor->visit_%s(visitor, %s, (%s*)&inst->%s[i], ctx);\n", field->type, field->name, field->type, field_name);
-			printf("\t}\n");
-		}
-		else if(field->element_count == -1)
-		{
-			printf("\tvisitor->visit_field_count(ctx, %s, (void**)&inst->%s, sizeof(inst->%s[0]), &inst->num%s);\n", field_name, field->name, field->name, field->name);
-			printf("\tfor(size_t i = 0; i < inst->num%s; ++i)\n\t{\n", field->name);
-			printf("\t\tchanged_count += visitor->visit_%s(visitor, %s, (%s*)&inst->%s[i], ctx);\n", field->type, field_name, field->type, field->name);
-			printf("\t}\n");
-		} else if(field->element_count == -2)
-		{
-			printf("\tsize_t num%s = 0;", field->name);
-			printf("\tvisitor->visit_field_count(ctx, %s, (void**)&inst->%s, sizeof(inst->%s[0]), &num%s);\n", field_name, field->name, field->name, field->name);
-			printf("\tfor(size_t i = 0; i < num%s; ++i)\n\t{\n", field->name);
-			printf("\t\tchanged_count += visitor->visit_%s(visitor, %s, (%s*)&inst->%s[i], ctx);\n", field->type, field_name, field->type, field->name);
-			printf("\t}\n");
-		}
-		else
-		{
-			printf("\tchanged_count += visitor->visit_%s(visitor, %s, (%s*)&inst->%s, ctx);\n", field->type, field_name, field->type, field->name);
-		}
-		return;
-	}
-	if(field->element_count == -1)
-	{
-		printf("\tvisitor->visit_field_count(ctx, %s, (void**)&inst->%s, sizeof(inst->%s[0]), &inst->num%s);\n", field_name, field->name, field->name, field->name);
-		printf("\tchanged_count += visitor->visit_%s(ctx, %s, (%s*)&inst->%s%s, inst->num%s);\n", field->type, field_name, field->type, field->name, array_index_str, field->name);
+		// printf("\t\tvisitor->visit_field_count(ctx, %s, (void**)&inst->%s, sizeof(inst->%s[0]), &inst->num%s);\n", field_name, field->name, field->name, field->name);
+		printf("\t\tchanged_count += visitor->visit_%s(visitor, %s, (%s*)&inst->%s[0], inst->num%s, sizeof(inst->%s[0]));\n", field->type, field_name, field->type, field->name, field->name, field->name);
 	} else if(field->element_count == -2)
 	{
-		printf("\tsize_t num%s = 0;", field->name);
-		printf("\tvisitor->visit_field_count(ctx, %s, (void**)&inst->%s, sizeof(inst->%s[0]), &num%s);\n", field_name, field->name, field->name, field->name);
-		printf("\tchanged_count += visitor->visit_%s(ctx, %s, (%s*)&inst->%s%s, num%s);\n", field->type, field_name, field->type, field->name, array_index_str, field->name);
-	} else 
-	{
-		printf("\tchanged_count += visitor->visit_%s(ctx, %s, (%s*)&inst->%s%s, %d);\n", field->type, field_name, field->type, field->name, array_index_str, field->element_count);
+		// printf("\t\tn = 0;\n");
+		// printf("\t\tvisitor->visit_field_count(ctx, %s, (void**)&inst->%s, sizeof(inst->%s[0]), &n);\n", field_name, field->name, field->name);
+		printf("\t\tchanged_count += visitor->visit_%s(visitor, %s, (%s*)&inst->%s[0], n, sizeof(inst->%s[0])));\n", field->type, field_name, field->type, field->name, field->name);
 	}
+	else
+	{
+		printf("\t\tchanged_count += visitor->visit_%s(visitor, %s, (%s*)&inst->%s, 1, sizeof(inst->%s));\n", field->type, field_name, field->type, field->name, field->name);
+	}
+	printf("\t}\n");
 }
 void write_visitor_entry(const char *type_field_visitor_name, Arena *arena, TypeEntry **entries, ForwardedType **forwarded_types, TypeEntry *it)
 {
@@ -754,14 +747,16 @@ void write_visitor_entry(const char *type_field_visitor_name, Arena *arena, Type
 		fields = it->fields;
 		printf("static void %s_init(%s *inst)\n{\n", it->name, it->name);
 		
-		printf("\tstatic const StructTypeInfo type_info_ = {.hash = 0x%x, .size = sizeof(%s), .initialize = (void(*)(void*))%s_init};\n",
-			it->name_hash,
-			it->name,
-			it->name
-		);
 		// printf("\t%s *inst = (%s*)data;\n", it->name, it->name);
 		if(it->visibility != k_EVisibilityPrivate)
 		{
+			printf("\tstatic const StructTypeInfo type_info_ = {.name = \"%s\", .hash = 0x%x, .size = sizeof(%s), .alignment = alignof(%s), .initialize = (void(*)(void*))%s_init, .clone = NULL};\n",
+				it->visibility == k_EVisibilityPublic ? it->name : "",
+				it->name_hash,
+				it->name,
+				it->name,
+				it->name
+			);
 			// printf("\tinst->type_ = %" PRIu32 ";\n", it->name_hash);
 			printf("\tinst->type_info_ = &type_info_;\n");
 		}
@@ -823,21 +818,26 @@ void write_visitor_entry(const char *type_field_visitor_name, Arena *arena, Type
 			fields = fields->next;
 		}
 		printf("}\n\n");
-		s32 field_index = 0;
-		fields = it->fields;
-		field_index = 0;
-		printf("static int %s_visit(struct %s_s *visitor, const char *key, %s *inst, void *ctx)\n{\n", it->name, type_field_visitor_name, it->name);
-		printf("\tint changed_count = 0;\n");
-		while(fields)
+	}
+}
+void write_visitor_entry_visitor(const char *type_field_visitor_name, Arena *arena, TypeEntry **entries, ForwardedType **forwarded_types, TypeEntry *it)
+{
+	if(entry_type_is_structure(it->entry_type))
+	{
+		if(entry_visit_count(it) > 0)
 		{
-			if(fields->visibility != k_EVisibilityPrivate)
+			printf("static size_t %s_visit(%s *visitor, const char *key, %s *inst, size_t nmemb, size_t size)\n{\n", it->name, type_field_visitor_name, it->name);
+			printf("\tsize_t changed_count = 0;\n");
+			printf("\tsize_t n = 0;\n");
+			ITERATE_LIST(Field, it->fields, field)
 			{
-				write_visitor_entry_field(entries, forwarded_types, fields);
-				++field_index;
+				if(field->visibility != k_EVisibilityPrivate)
+				{
+					write_visitor_entry_field(entries, forwarded_types, field);
+				}
 			}
-			fields = fields->next;
+			printf("\treturn changed_count;\n}\n\n");
 		}
-		printf("\treturn changed_count;\n}\n\n");
 	}
 }
 
@@ -857,20 +857,19 @@ size_t type_entry_field_count(TypeEntry *it)
 	return n;
 }
 
-void write_vtable(CompilerOptions *opts, TypeEntry *beg)
+void write_vtable(CompilerOptions *opts, TypeEntry *entries)
 {
 	// https://stackoverflow.com/questions/24743520/incompatible-pointer-types-passing-in-generic-macro
 	// All branches of a _Generic primary expression must be a valid expressions, and thus valid under all circumstances.
 	// The fact that only one of the branches will ever be evaluated, is not related to this.
 	printf("#define type_%s_init(x) _Generic((x), \\\n", opts->prefix);
-	TypeEntry *entries = beg;
-	while(entries)
+	ITERATE_LIST(TypeEntry, entries, it)
 	{
-		if(entry_type_is_structure(entries->entry_type))// && entries->visibility != k_EVisibilityPrivate)
+		if(entry_type_is_structure(it->entry_type))// && entries->visibility != k_EVisibilityPrivate)
 		{
 			// printf("\t%s*: %s_init(x), \\\n", entries->name, entries->name);
-			printf("\t%s: %s_init", entries->name, entries->name);
-			if(entries->next)
+			printf("\t%s: %s_init", it->name, it->name);
+			if(it->next)
 			{
 				printf(",");
 				printf(" \\");
@@ -880,7 +879,49 @@ void write_vtable(CompilerOptions *opts, TypeEntry *beg)
 			}
 			printf("\n");
 		}
-		entries = entries->next;
+	}
+printf(R"(
+#ifndef type_info
+static StructTypeInfo* type_info_(StructTypeInfo **ptr)
+{
+	return *ptr;
+}
+#define type_info(ptr) type_info_((StructTypeInfo**)ptr)
+#endif
+
+#ifndef type_init
+#define type_init(type, name) \
+    type name = (type){ 0 }; \
+    type##_init(&name)
+#endif
+
+)");
+
+/*
+#define type_init(type, name, ...) \
+    type name = (type){__VA_ARGS__, 0}; \
+    name##_init(&name);
+*/
+// ##__VA_ARGS__ is GCC extension
+// __VA_OPT__ is C23
+
+	printf("#define type_%s_visit(visitor, x) _Generic((x), \\\n", opts->prefix);
+	ITERATE_LIST(TypeEntry, entries, it)
+	{
+		if(entry_type_is_structure(it->entry_type) && entry_visit_count(it) > 0)// && entries->visibility != k_EVisibilityPrivate)
+		{
+			// printf("\t%s*: %s_init(x), \\\n", entries->name, entries->name);
+			printf("\t%s: %s_visit", it->name, it->name);
+			if(it->next)
+			{
+				printf(",");
+				printf(" \\");
+			} else
+			{
+				printf(")(visitor, NULL, &(x), 1, sizeof(x))");
+			}
+			printf("\n");
+		}
 	}
 }
 
@@ -1074,78 +1115,83 @@ static void print_visitor_info(CompilerOptions *opts, Arena *arena, TypeEntry *e
 	char type_field_visitor_name[256]={0};
 	snprintf(type_field_visitor_name,
 			 sizeof(type_field_visitor_name),
-			 "%c%sTypeFieldVisitor",
+			 "%c%sVisitor",
 			 toupper(opts->prefix[0]),
 			 &opts->prefix[1]);
-	printf("typedef struct %s_s\n{\n", type_field_visitor_name);
+	printf("typedef struct %s_s %s;\n", type_field_visitor_name, type_field_visitor_name);
+	printf("typedef size_t (*%sFn)(%s *visitor, const char *key, void *value, size_t nmemb, size_t size);\n\n", type_field_visitor_name, type_field_visitor_name);
+
+	printf("struct %s_s\n{\n", type_field_visitor_name);
+	printf("\tvoid *ctx;\n\n");
 	
 	for(s32 i = 0; data_types[i].name; ++i)
 	{
 		if(used_data_type_flags & (1 << i))
 		{
-			printf("\tint (*visit_%s)(void *ctx, const char *key, %s *value, size_t num_elements);\n", data_types[i].name, data_types[i].name);
+			printf("\t%sFn visit_%s;\n", type_field_visitor_name, data_types[i].name);
 		}
 	}
-	ForwardedType *fwd_it = forwarded_types;
-	while(fwd_it)
+	ITERATE_LIST(ForwardedType, forwarded_types, fwd_it)
 	{
-		printf("\tint (*visit_%s)(void *ctx, const char *key, %s *value, size_t num_elements);\n", fwd_it->name, fwd_it->name);
-		fwd_it = fwd_it->next;
+		printf("\t%sFn visit_%s;\n", type_field_visitor_name, fwd_it->name);
 	}
+	ITERATE_LIST(TypeEntry, entries, it)
 	{
-		TypeEntry *it = entries;
-
-		while(it)
+		if(entry_type_is_structure(it->entry_type))// && entries->visibility != k_EVisibilityPrivate)
 		{
-			if(entry_type_is_structure(it->entry_type))// && entries->visibility != k_EVisibilityPrivate)
+			if(it->referenced_as_field)
 			{
-				if(it->referenced_as_field)
-					printf("\tint (*visit_%s)(struct %s_s *visitor, const char *key, %s *value, void *ctx);\n", it->name, type_field_visitor_name, it->name);
+				printf("\t%sFn visit_%s;\n", type_field_visitor_name, it->name);
 			}
-			it = it->next;
 		}
 	}
-	// printf("\tint (*visit)(void *ctx, const char *key, void *value, size_t size, size_t num_elements); // Fallback in case visit_X is NULL\n");
-	printf("\tint (*visit_field_count)(void *ctx, const char *key, void **value, size_t element_size, size_t *num_elements);\n");
-	printf("} %s;\n\n", type_field_visitor_name);
+	// printf("\t%sFn visit; // Fallback in case visit_X is NULL\n", type_field_visitor_name);
+	printf("\tbool (*pre_visit)(%s *visitor, const char *key, uint32_t hashed_key, void **value, size_t *nmemb, size_t size);\n", type_field_visitor_name);
+	// printf("\tbool (*visit_field_count)(struct %s_s *visitor, const char *key, void **value, size_t element_size, size_t *num_elements, size_t *changed_count);\n", type_field_visitor_name);
+	printf("};\n\n");
+	printf("// ============           INITIALIZATION         ==================\n\n");
+	ITERATE_LIST(TypeEntry, entries, it)
 	{
-		TypeEntry *it = entries;
-
-		while(it)
-		{
-			write_visitor_entry(type_field_visitor_name, arena, &entries, &forwarded_types, it);
-			it = it->next;
-		}
+		write_visitor_entry(type_field_visitor_name, arena, &entries, &forwarded_types, it);
 	}
-	printf("static int %s_visitor_dummy_(void *ctx, const char *key, void *value, size_t num_elements) { return 0; }\n", opts->prefix);
-	
+	printf("// ================================================================\n\n");
+	printf("// ============              VISITORS            ==================\n\n");
+	ITERATE_LIST(TypeEntry, entries, it)
+	{
+		write_visitor_entry_visitor(type_field_visitor_name, arena, &entries, &forwarded_types, it);
+	}
+	printf("// ================================================================\n\n");
+	printf("static size_t %s_visitor_dummy_(%s *visitor, const char *key, void *value, size_t nmemb, size_t size) { return 0; }\n", opts->prefix, type_field_visitor_name);
+	printf("static bool %s_pre_visit_dummy_(%s *visitor, const char *key, uint32_t hashed_key, void **value, size_t *nmemb, size_t size) { return false; }\n", opts->prefix, type_field_visitor_name);
 	printf("static void type_%s_visitor_init(%s *v)\n{\n", opts->prefix, type_field_visitor_name);
 	
+	printf("\tv->pre_visit = %s_pre_visit_dummy_;\n", opts->prefix);
 	for(s32 i = 0; data_types[i].name; ++i)
 	{
 		if(used_data_type_flags & (1 << i))
 		{
-			printf("\tv->visit_%s = (int (*)(void *ctx, const char *key, %s *value, size_t num_elements))%s_visitor_dummy_;\n", data_types[i].name, data_types[i].name, opts->prefix);
+			printf("\tv->visit_%s = %s_visitor_dummy_;\n", data_types[i].name, opts->prefix);
 		}
 	}
 	
-	fwd_it = forwarded_types;
-	while(fwd_it)
+	ITERATE_LIST(ForwardedType, forwarded_types, fwd_it)
 	{
-		printf("\tv->visit_%s = (int (*)(void *ctx, const char *key, %s *value, size_t num_elements))%s_visitor_dummy_;\n", fwd_it->name, fwd_it->name, opts->prefix);
-		fwd_it = fwd_it->next;
+		printf("\tv->visit_%s = %s_visitor_dummy_;\n", fwd_it->name, opts->prefix);
 	}
+	ITERATE_LIST(TypeEntry, entries, it)
 	{
-		TypeEntry *it = entries;
-
-		while(it)
+		if(entry_type_is_structure(it->entry_type))// && entries->visibility != k_EVisibilityPrivate)
 		{
-			if(entry_type_is_structure(it->entry_type))// && entries->visibility != k_EVisibilityPrivate)
+			if(it->referenced_as_field)
 			{
-				if(it->referenced_as_field)
-					printf("\tv->visit_%s = %s_visit;\n", it->name, it->name);
+				if(entry_visit_count(it) > 0)
+				{
+					printf("\tv->visit_%s = (%sFn)%s_visit;\n", it->name, type_field_visitor_name, it->name);
+				} else
+				{
+					printf("\tv->visit_%s = %s_visitor_dummy_;\n", it->name, opts->prefix);
+				}
 			}
-			it = it->next;
 		}
 	}
 	printf("}\n");
@@ -1209,15 +1255,26 @@ printf(R"(
 
 typedef struct
 {
-	// const char *name;
+	const char *name;
 	uint32_t hash;
 	size_t size;
-	// size_t alignment;
+	size_t alignment;
 	void (*initialize)(void*);
-	// void* (*clone)(void*);
+	void* (*clone)(void*);
 } StructTypeInfo;
 
 #endif
+
+// #include <stdalign.h>
+
+#if __STDC_VERSION__ >= 202311L // C23
+    // Already supported
+#elif __STDC_VERSION__ >= 201112L // C11
+    #define alignof _Alignof
+#else
+    #define alignof(x) __alignof__(x) // Try GCC extension
+#endif
+
 )");
 
 	print_visitor_info(opts, arena, entries);
