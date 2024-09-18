@@ -2,6 +2,7 @@
 #define PARSE_TYPE_H
 #include <stdbool.h>
 #include <inttypes.h>
+#include <ctype.h>
 #include "../stream_file.h"
 #include "../stream_buffer.h"
 
@@ -113,7 +114,7 @@ typedef struct TypeEntry_s
 {
 	struct TypeEntry_s *next;
 	k_ETypeEntryType entry_type;
-	char name[64];
+	char name[256];
 	k_EVisibility visibility;
 	s32 index;
 	Field *fields;
@@ -165,6 +166,26 @@ static size_t entry_visit_count(TypeEntry *entry)
 		}
 	}
 	return n;
+}
+
+static char type_prefix[128];
+
+static void string_constant_case(char *str, char *out, size_t n)
+{
+	size_t i = 0;
+	for(char *p = str; *p; ++p)
+	{
+		if(i + 1 >= n)
+			break;
+		if(p != str && (*p >= 'A' && *p <='Z') && !isupper(*(p + 1)))
+		{
+			out[i++] = '_';
+		}
+		if(i + 1 >= n)
+			break;
+		out[i++] = toupper(*p);
+	}
+	out[i] = 0;
 }
 
 void data_type_string_definition(struct DataType_s *dt, TypeEntry *entry, Field *field)
@@ -363,6 +384,20 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 			default:
 				lexer_error(lexer, "Expected identifier");
 			break;
+			case '#':
+				lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &t);
+				char directive[64];
+				lexer_token_read_string(lexer, &t, directive, sizeof(directive));
+				if(!strcmp(directive, "prefix"))
+				{
+					lexer_expect(lexer, TOKEN_TYPE_STRING, &t);
+					lexer_token_read_string(lexer, &t, type_prefix, sizeof(type_prefix));
+				}
+				else
+				{
+					lexer_error(lexer, "Invalid directive");
+				}
+			break;
 			case TOKEN_TYPE_IDENTIFIER:
 			{
 				if(t.hash == id_extern)
@@ -414,7 +449,9 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 					Token name;
 					lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &name);
 					lexer_expect(lexer, '{', NULL);
-					lexer_token_read_string(lexer, &name, entry->name, sizeof(entry->name));
+					char name_str[256];
+					lexer_token_read_string(lexer, &name, name_str, sizeof(name_str));
+					snprintf(entry->name, sizeof(entry->name), "%s%s", type_prefix, name_str);
 					entry->name_hash = fnv1a_32(entry->name);
 					//printf("%s\n", temp);
 					if(id_hash == id_struct || id_hash == id_component || id_hash == id_message)
@@ -465,6 +502,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 								field->element_count = 1;
 								field->replicated = replicated;
 								field->type_hash = field_type.hash;
+								field->metadata[0] = 0;
 								s32 dt_index = data_type_index_by_hash(field_type.hash);
 								if(dt_index == -1)
 								{
@@ -534,7 +572,7 @@ void parse_type(Lexer *lexer, TypeEntry **entries_out, ForwardedType **forwarded
 								if(!lexer_accept(lexer, '@', NULL))
 								{
 									Token keyword;
-									lexer_expect(lexer, TOKEN_TYPE_IDENTIFIER, &keyword);
+									lexer_expect(lexer, TOKEN_TYPE_STRING, &keyword);
 									lexer_token_read_string(lexer, &keyword, field->metadata, sizeof(field->metadata));
 								}
 								if(!lexer_accept(lexer, '%', NULL))
@@ -654,19 +692,29 @@ void write_definitions(TypeEntry *entries)
 			switch(entries->entry_type)
 			{
 				case k_ETypeEntryTypeEnum:
-					printf("\tk_E%s%s", entries->name, fields->name);
+				{
+					char concatenated[256] = { 0 };
+					char constant[256] = { 0 };
+					snprintf(concatenated, sizeof(concatenated), "%s%s", entries->name, fields->name);
+					string_constant_case(concatenated, constant, sizeof(constant));
+					printf("\t%s", constant);
 					if(fields->next)
 						printf(",\n");
 					else
 						printf("\n");
-				break;
+				} break;
 				case k_ETypeEntryTypeFlags:
-					printf("\tk_E%s%s = 0x%02X", entries->name, fields->name, (1 << field_index));
+				{
+					char concatenated[256] = { 0 };
+					char constant[256] = { 0 };
+					snprintf(concatenated, sizeof(concatenated), "%s%s", entries->name, fields->name);
+					string_constant_case(concatenated, constant, sizeof(constant));
+					printf("\t%s = 0x%02X", constant, (1 << field_index));
 					if(fields->next)
 						printf(",\n");
 					else
 						printf("\n");
-				break;
+				} break;
 				default:
 				{
 					if(entry_type_is_structure(entries->entry_type))
@@ -683,7 +731,7 @@ void write_definitions(TypeEntry *entries)
 		{
 			case k_ETypeEntryTypeEnum:
 			case k_ETypeEntryTypeFlags:
-				printf("} k_E%s;\n\n", entries->name);
+				printf("} %s;\n\n", entries->name);
 			break;
 			default:
 				if(entry_type_is_structure(entries->entry_type))
@@ -706,14 +754,17 @@ void write_visitor_entry_field(TypeEntry **entries, ForwardedType **forwarded_ty
 		snprintf(field_name, sizeof(field_name), "NULL");
 	} else {
 		
-		snprintf(field_name, sizeof(field_name), "\"%s\"", field->name);
+		snprintf(field_name, sizeof(field_name), "\"%s\"", field->metadata[0] != 0 ? field->metadata : field->name);
 	}
-	if(field->element_count > 1 || field->element_count == -2)
+	if(field->element_count > 1)
 	{
-		printf("\tif(visitor->pre_visit(visitor, %s, 0x%x, (void**)&inst->%s, &n, sizeof(inst->%s[0])))\n\t{\n", field_name, field->name_hash, field->name, field->name);
+		printf("\tif(visitor->pre_visit(visitor, %s, 0x%x, (void**)&inst->%s, NULL, sizeof(inst->%s[0])))\n\t{\n", field_name, field->name_hash, field->name, field->name);
+	} else if(field->element_count == -2)
+	{
+		printf("\tif(visitor->pre_visit(visitor, %s, 0x%x, (void**)&inst->%s, &n, sizeof(inst->%s[0])) && n > 0 && inst->%s)\n\t{\n", field_name, field->name_hash, field->name, field->name, field->name);
 	} else if(field->element_count == -1)
 	{
-		printf("\tif(visitor->pre_visit(visitor, %s, 0x%x, (void**)&inst->%s, &inst->num%s, sizeof(inst->%s[0])))\n\t{\n", field_name, field->name_hash, field->name, field->name, field->name);
+		printf("\tif(visitor->pre_visit(visitor, %s, 0x%x, (void**)&inst->%s, &inst->num%s, sizeof(inst->%s[0])) && inst->%s && inst->num%s > 0)\n\t{\n", field_name, field->name_hash, field->name, field->name, field->name, field->name, field->name);
 	}
 	else
 	{
@@ -750,13 +801,15 @@ void write_visitor_entry(const char *type_field_visitor_name, Arena *arena, Type
 		// printf("\t%s *inst = (%s*)data;\n", it->name, it->name);
 		if(it->visibility != k_EVisibilityPrivate)
 		{
-			printf("\tstatic const StructTypeInfo type_info_ = {.name = \"%s\", .hash = 0x%x, .size = sizeof(%s), .alignment = alignof(%s), .initialize = (void(*)(void*))%s_init, .clone = NULL};\n",
+			printf("\tstatic const StructTypeInfo type_info_ = {.name = \"%s\", .hash = 0x%x, .size = sizeof(%s), .alignment = alignof(%s), .initialize = (void(*)(void*))%s_init, .clone = NULL, .visitor = (size_t (*)(void *visitor, const char *key, void *value, size_t nmemb, size_t size))%s_visit};\n",
 				it->visibility == k_EVisibilityPublic ? it->name : "",
 				it->name_hash,
 				it->name,
 				it->name,
+				it->name,
 				it->name
 			);
+			printf("\tmemset(inst, 0, sizeof(*inst));\n");
 			// printf("\tinst->type_ = %" PRIu32 ";\n", it->name_hash);
 			printf("\tinst->type_info_ = &type_info_;\n");
 		}
@@ -765,7 +818,7 @@ void write_visitor_entry(const char *type_field_visitor_name, Arena *arena, Type
 			if(fields->data_type == k_EFieldDataTypeCustom)
 			{
 				TypeEntry *fnd = type_entry_by_name(entries, fields->type);
-				if(fnd && fnd->visibility != k_EVisibilityPrivate) // If the type visibility is set to private, we can't infer the type because it doesn't have a type_ field.
+				if(fnd)// && fnd->visibility != k_EVisibilityPrivate) // If the type visibility is set to private, we can't infer the type because it doesn't have a type_ field.
 				{
 					if(fields->element_count == 1)
 						printf("\t%s_init(&inst->%s);\n", fnd->name, fields->name);
@@ -813,6 +866,14 @@ void write_visitor_entry(const char *type_field_visitor_name, Arena *arena, Type
 						// TODO: Lexer doesn't support hexadecimal values at the moment.
 						printf("\tinst->%s =%s;\n", fields->name, fields->initial_value);
 					}
+				} else
+				{
+					// if(fields->element_count < 0)
+					// {
+					// 	if(fields->element_count == -1)
+					// 		printf("\tinst->num%s = 0;\n", fields->name);
+					// 	printf("\tinst->%s = NULL;\n", fields->name);
+					// }
 				}
 			}
 			fields = fields->next;
@@ -862,24 +923,24 @@ void write_vtable(CompilerOptions *opts, TypeEntry *entries)
 	// https://stackoverflow.com/questions/24743520/incompatible-pointer-types-passing-in-generic-macro
 	// All branches of a _Generic primary expression must be a valid expressions, and thus valid under all circumstances.
 	// The fact that only one of the branches will ever be evaluated, is not related to this.
-	printf("#define type_%s_init(x) _Generic((x), \\\n", opts->prefix);
-	ITERATE_LIST(TypeEntry, entries, it)
-	{
-		if(entry_type_is_structure(it->entry_type))// && entries->visibility != k_EVisibilityPrivate)
-		{
-			// printf("\t%s*: %s_init(x), \\\n", entries->name, entries->name);
-			printf("\t%s: %s_init", it->name, it->name);
-			if(it->next)
-			{
-				printf(",");
-				printf(" \\");
-			} else
-			{
-				printf(")(&(x))");
-			}
-			printf("\n");
-		}
-	}
+	// printf("#define type_%s_init(x) _Generic((x), \\\n", opts->prefix);
+	// ITERATE_LIST(TypeEntry, entries, it)
+	// {
+	// 	if(entry_type_is_structure(it->entry_type))// && entries->visibility != k_EVisibilityPrivate)
+	// 	{
+	// 		// printf("\t%s*: %s_init(x), \\\n", entries->name, entries->name);
+	// 		printf("\t%s: %s_init", it->name, it->name);
+	// 		if(it->next)
+	// 		{
+	// 			printf(",");
+	// 			printf(" \\");
+	// 		} else
+	// 		{
+	// 			printf(")(&(x))");
+	// 		}
+	// 		printf("\n");
+	// 	}
+	// }
 printf(R"(
 #ifndef type_info
 static StructTypeInfo* type_info_(StructTypeInfo **ptr)
@@ -905,24 +966,24 @@ static StructTypeInfo* type_info_(StructTypeInfo **ptr)
 // ##__VA_ARGS__ is GCC extension
 // __VA_OPT__ is C23
 
-	printf("#define type_%s_visit(visitor, x) _Generic((x), \\\n", opts->prefix);
-	ITERATE_LIST(TypeEntry, entries, it)
-	{
-		if(entry_type_is_structure(it->entry_type) && entry_visit_count(it) > 0)// && entries->visibility != k_EVisibilityPrivate)
-		{
-			// printf("\t%s*: %s_init(x), \\\n", entries->name, entries->name);
-			printf("\t%s: %s_visit", it->name, it->name);
-			if(it->next)
-			{
-				printf(",");
-				printf(" \\");
-			} else
-			{
-				printf(")(visitor, NULL, &(x), 1, sizeof(x))");
-			}
-			printf("\n");
-		}
-	}
+	// printf("#define type_%s_visit(visitor, x) _Generic((x), \\\n", opts->prefix);
+	// ITERATE_LIST(TypeEntry, entries, it)
+	// {
+	// 	if(entry_type_is_structure(it->entry_type) && entry_visit_count(it) > 0)// && entries->visibility != k_EVisibilityPrivate)
+	// 	{
+	// 		// printf("\t%s*: %s_init(x), \\\n", entries->name, entries->name);
+	// 		printf("\t%s: %s_visit", it->name, it->name);
+	// 		if(it->next)
+	// 		{
+	// 			printf(",");
+	// 			printf(" \\");
+	// 		} else
+	// 		{
+	// 			printf(")(visitor, NULL, &(x), 1, sizeof(x))");
+	// 		}
+	// 		printf("\n");
+	// 	}
+	// }
 }
 
 int sort_fields_compare(Field *a, Field *b)
@@ -969,7 +1030,6 @@ ForwardedType *forwarded_types = NULL;
 static void print_types()
 {
 printf(R"(
-#pragma once
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -1149,12 +1209,6 @@ static void print_visitor_info(CompilerOptions *opts, Arena *arena, TypeEntry *e
 	printf("\tbool (*pre_visit)(%s *visitor, const char *key, uint32_t hashed_key, void **value, size_t *nmemb, size_t size);\n", type_field_visitor_name);
 	// printf("\tbool (*visit_field_count)(struct %s_s *visitor, const char *key, void **value, size_t element_size, size_t *num_elements, size_t *changed_count);\n", type_field_visitor_name);
 	printf("};\n\n");
-	printf("// ============           INITIALIZATION         ==================\n\n");
-	ITERATE_LIST(TypeEntry, entries, it)
-	{
-		write_visitor_entry(type_field_visitor_name, arena, &entries, &forwarded_types, it);
-	}
-	printf("// ================================================================\n\n");
 	printf("// ============              VISITORS            ==================\n\n");
 	ITERATE_LIST(TypeEntry, entries, it)
 	{
@@ -1162,9 +1216,9 @@ static void print_visitor_info(CompilerOptions *opts, Arena *arena, TypeEntry *e
 	}
 	printf("// ================================================================\n\n");
 	printf("static size_t %s_visitor_dummy_(%s *visitor, const char *key, void *value, size_t nmemb, size_t size) { return 0; }\n", opts->prefix, type_field_visitor_name);
-	printf("static bool %s_pre_visit_dummy_(%s *visitor, const char *key, uint32_t hashed_key, void **value, size_t *nmemb, size_t size) { return false; }\n", opts->prefix, type_field_visitor_name);
-	printf("static void type_%s_visitor_init(%s *v)\n{\n", opts->prefix, type_field_visitor_name);
-	
+	printf("static bool %s_pre_visit_dummy_(%s *visitor, const char *key, uint32_t hashed_key, void **value, size_t *nmemb, size_t size) { return true; }\n", opts->prefix, type_field_visitor_name);
+	printf("static void type_%s_visitor_init(%s *v, void *ctx)\n{\n", opts->prefix, type_field_visitor_name);
+	printf("\tv->ctx = ctx;\n");
 	printf("\tv->pre_visit = %s_pre_visit_dummy_;\n", opts->prefix);
 	for(s32 i = 0; data_types[i].name; ++i)
 	{
@@ -1195,6 +1249,12 @@ static void print_visitor_info(CompilerOptions *opts, Arena *arena, TypeEntry *e
 		}
 	}
 	printf("}\n");
+	printf("// ============           INITIALIZATION         ==================\n\n");
+	ITERATE_LIST(TypeEntry, entries, it)
+	{
+		write_visitor_entry(type_field_visitor_name, arena, &entries, &forwarded_types, it);
+	}
+	printf("// ================================================================\n\n");
 }
 
 void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
@@ -1232,15 +1292,6 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 		fprintf(stderr, "C11 is required for _Generic support");
 		exit(-1);
 	}
-	
-	// printf("#ifdef TYPE_IMPLEMENTATION\n\n");
-	// printf("#include <stdbool.h>\n");
-	// printf("#include <inttypes.h>\n");
-	// printf("#include <stddef.h>\n");
-	// printf("#include <stdio.h>\n");
-	
-	print_types();
-	write_definitions(entries);
 	char uppercase[256] = { 0 };
 	for(size_t i = 0; i < sizeof(uppercase) - 1; ++i)
 	{
@@ -1248,6 +1299,39 @@ void parse_type_file(const char *path, Arena *arena, CompilerOptions *opts)
 			break;
 		uppercase[i] = toupper(opts->prefix[i]);
 	}
+	
+	// printf("#ifdef TYPE_IMPLEMENTATION\n\n");
+	// printf("#include <stdbool.h>\n");
+	// printf("#include <inttypes.h>\n");
+	// printf("#include <stddef.h>\n");
+	// printf("#include <stdio.h>\n");
+
+	// printf("#ifdef DEFINE_%s_X_MACRO\n", uppercase);
+
+	printf("#ifndef %s_X_MACRO\n", uppercase);
+	char tmp[256] = { 0 };
+	printf("#define %s_X_MACRO(X) \\\n", uppercase);
+	ITERATE_LIST(TypeEntry, entries, it)
+	{
+		if(entry_type_is_structure(it->entry_type))
+		{
+			string_constant_case(it->name, tmp, sizeof(tmp));
+			char tmp_lower[256] = { 0 };
+			for(size_t k = 0; tmp[k]; ++k)
+				tmp_lower[k] = tolower(tmp[k]);
+			if(it->next)
+				printf("\tX(%s, %s, %s) \\\n", tmp, it->name, tmp_lower);
+			else
+				printf("\tX(%s, %s, %s)\n", tmp, it->name, tmp_lower);
+		}
+	}
+	printf("#endif\n");
+	// printf("#endif\n");
+
+	printf("#ifndef %s_TYPE_HEADER_INCLUDE_GUARD\n", uppercase);
+	printf("#define %s_TYPE_HEADER_INCLUDE_GUARD\n", uppercase);
+	print_types();
+	write_definitions(entries);
 	printf("#ifdef %s_VISITOR_IMPLEMENTATION\n", uppercase);
 printf(R"(
 #ifndef STRUCT_TYPE_INFO_DEFINED
@@ -1261,6 +1345,7 @@ typedef struct
 	size_t alignment;
 	void (*initialize)(void*);
 	void* (*clone)(void*);
+	size_t (*visitor)(void *visitor, const char *key, void *value, size_t nmemb, size_t size);
 } StructTypeInfo;
 
 #endif
@@ -1295,7 +1380,7 @@ typedef struct
 	// }
 	write_vtable(opts, entries);
 	printf("#endif\n");
-	
+	printf("#endif\n");
 	// {
 	// 	TypeEntry *it = entries;
 
